@@ -64,3 +64,86 @@ pub fn jackknife_se(loo_estimates: &[f64], full: f64) -> f64 {
     let ss: f64 = loo_estimates.iter().map(|x| (x - mean).powi(2)).sum();
     ((n as f64 - 1.0) / n as f64 * ss).sqrt()
 }
+
+#[inline]
+fn mean(x: &[f64]) -> f64 {
+    if x.is_empty() {
+        0.0
+    } else {
+        x.iter().sum::<f64>() / x.len() as f64
+    }
+}
+
+/// Moving-block bootstrap of the **mean** of a (serially-dependent) series.
+///
+/// Resamples length-`block_len` contiguous (circular) blocks until a series of
+/// the original length is filled, then takes its mean; repeats `n_reps` times.
+/// Accounts for serial correlation in, e.g., a synthetic-control gap path when
+/// estimating the sampling variability of the average post-period effect.
+///
+/// Determinism: replicate `b` draws from substream `(seed, b)`.
+pub fn block_bootstrap_mean(
+    series: &[f64],
+    block_len: usize,
+    n_reps: usize,
+    seed: u64,
+    level: f64,
+) -> (ConfidenceInterval, Vec<f64>) {
+    let t = series.len();
+    let point = mean(series);
+    if t == 0 {
+        return (percentile_ci(point, &[point], level), Vec::new());
+    }
+    let l = block_len.clamp(1, t);
+    let draws = par_map(n_reps, seed, |_, rng| {
+        let mut acc = 0.0;
+        let mut count = 0usize;
+        while count < t {
+            let start = rng.gen_range(t);
+            for k in 0..l {
+                if count >= t {
+                    break;
+                }
+                acc += series[(start + k) % t];
+                count += 1;
+            }
+        }
+        acc / t as f64
+    });
+    (percentile_ci(point, &draws, level), draws)
+}
+
+/// Politis–Romano **stationary** bootstrap of the mean of a series.
+///
+/// Like the moving-block bootstrap but with random geometric block lengths
+/// (mean `mean_block_len`): at each step, continue to the next (circular) index
+/// with probability `1 − 1/L`, else jump to a fresh random index. Produces a
+/// strictly stationary resampled series.
+pub fn stationary_bootstrap_mean(
+    series: &[f64],
+    mean_block_len: usize,
+    n_reps: usize,
+    seed: u64,
+    level: f64,
+) -> (ConfidenceInterval, Vec<f64>) {
+    let t = series.len();
+    let point = mean(series);
+    if t == 0 {
+        return (percentile_ci(point, &[point], level), Vec::new());
+    }
+    let p = 1.0 / mean_block_len.max(1) as f64;
+    let draws = par_map(n_reps, seed, |_, rng| {
+        let mut idx = rng.gen_range(t);
+        let mut acc = 0.0;
+        for _ in 0..t {
+            acc += series[idx];
+            if rng.next_f64() < p {
+                idx = rng.gen_range(t);
+            } else {
+                idx = (idx + 1) % t;
+            }
+        }
+        acc / t as f64
+    });
+    (percentile_ci(point, &draws, level), draws)
+}

@@ -5,7 +5,9 @@ use panelkit_estimators::mcnnm::{fit_mcnnm_at, McnnmConfig};
 use panelkit_estimators::sc::cpasc::{fit_at as fit_cpasc_at, CpascConfig, PoolMode};
 use panelkit_estimators::sc::{fit_asc_at, fit_at, fit_sdid_at, AscConfig, ScConfig, SdidConfig};
 use panelkit_estimators::{Panel, ScFit};
-use panelkit_inference::{percentile_ci, sc_placebo};
+use panelkit_inference::{
+    block_bootstrap_mean, percentile_ci, sc_placebo, stationary_bootstrap_mean,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -124,6 +126,31 @@ pub fn fit_mcnnm(
         seed,
     };
     Ok(result_from_fit(&fit_mcnnm_at(&panel, treat_time, cfg)))
+}
+
+/// Block / stationary bootstrap of the mean of a series (e.g. a post-period
+/// gap path). Returns `(se, ci_lower, ci_upper)`. `kind` is "block" or
+/// "stationary"; `block_len` is the (mean) block length.
+#[pyfunction]
+#[pyo3(signature = (series, kind="block", block_len=4, n_reps=2000, seed=0, level=0.95))]
+pub fn bootstrap_mean(
+    series: Vec<f64>,
+    kind: &str,
+    block_len: usize,
+    n_reps: usize,
+    seed: u64,
+    level: f64,
+) -> PyResult<(f64, f64, f64)> {
+    let (ci, _draws) = match kind {
+        "block" => block_bootstrap_mean(&series, block_len, n_reps, seed, level),
+        "stationary" => stationary_bootstrap_mean(&series, block_len, n_reps, seed, level),
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown bootstrap kind '{other}' (expected block/stationary)"
+            )))
+        }
+    };
+    Ok((ci.se, ci.lower, ci.upper))
 }
 
 /// Fit a CP-ASC-family estimator (novel). `mode` is "mspe" (CP-ASC),

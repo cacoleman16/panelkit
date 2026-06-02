@@ -1,7 +1,9 @@
 //! Inference-engine tests: multiplier bootstrap correctness and the
 //! thread-count-invariance (determinism) guarantee.
 
-use panelkit_inference::bootstrap::{jackknife_se, multiplier_bootstrap};
+use panelkit_inference::bootstrap::{
+    block_bootstrap_mean, jackknife_se, multiplier_bootstrap, stationary_bootstrap_mean,
+};
 
 /// The multiplier-bootstrap SE of a sample mean (IF_i = x_i − x̄) should be close
 /// to the analytic SE = sd/√n.
@@ -56,6 +58,50 @@ fn bootstrap_is_thread_count_invariant() {
             expect
         );
     }
+}
+
+#[test]
+fn block_bootstrap_ci_brackets_mean_of_iid_series() {
+    // For a roughly-iid series, the block bootstrap of the mean should bracket
+    // the sample mean with a sensible SE (≈ sd/√n for block_len 1).
+    let x: Vec<f64> = (0..200)
+        .map(|i| ((i * 13 % 97) as f64) / 97.0 - 0.5)
+        .collect();
+    let n = x.len();
+    let m = x.iter().sum::<f64>() / n as f64;
+    let var = x.iter().map(|v| (v - m).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+    let analytic = (var / n as f64).sqrt();
+    let (ci, draws) = block_bootstrap_mean(&x, 1, 3000, 7, 0.95);
+    assert_eq!(draws.len(), 3000);
+    assert!(ci.lower < m && m < ci.upper, "CI should bracket the mean");
+    // Block length 1 ≈ iid bootstrap → SE close to analytic.
+    assert!(
+        (ci.se - analytic).abs() / analytic < 0.15,
+        "block-bootstrap se {} vs analytic {}",
+        ci.se,
+        analytic
+    );
+}
+
+#[test]
+fn stationary_bootstrap_runs_and_brackets() {
+    let x: Vec<f64> = (0..150).map(|i| (i as f64 * 0.07).sin()).collect();
+    let m = x.iter().sum::<f64>() / x.len() as f64;
+    let (ci, draws) = stationary_bootstrap_mean(&x, 10, 2000, 3, 0.9);
+    assert_eq!(draws.len(), 2000);
+    assert!(ci.lower <= m && m <= ci.upper);
+    assert!(ci.se > 0.0);
+}
+
+#[test]
+fn bootstrap_engines_thread_count_invariant() {
+    let x: Vec<f64> = (0..120).map(|i| ((i * 7 % 13) as f64) - 6.0).collect();
+    let a = block_bootstrap_mean(&x, 8, 1500, 42, 0.95).1;
+    let b = block_bootstrap_mean(&x, 8, 1500, 42, 0.95).1;
+    assert_eq!(a, b);
+    let c = stationary_bootstrap_mean(&x, 8, 1500, 42, 0.95).1;
+    let d = stationary_bootstrap_mean(&x, 8, 1500, 42, 0.95).1;
+    assert_eq!(c, d);
 }
 
 #[test]

@@ -22,6 +22,9 @@ class _Result:
 
     def __init__(self, raw):
         self._raw = raw
+        self._boot_se = None
+        self._boot_ci = None
+        self._level = 0.95
 
     @property
     def att(self) -> float:
@@ -61,7 +64,13 @@ class _Result:
 
     @property
     def se(self):
-        return self._raw.se
+        # Bootstrap-derived SE overrides the placebo-derived one when present.
+        return self._boot_se if self._boot_se is not None else self._raw.se
+
+    @property
+    def ci(self):
+        """(lower, upper) confidence interval, when an inference engine ran."""
+        return self._boot_ci
 
     @property
     def inference_distribution(self):
@@ -77,10 +86,27 @@ class _Result:
         ]
         if self.p_value is not None:
             lines.append(f"placebo p-value: {self.p_value:.4g}")
+        if self.se is not None:
+            lines.append(f"SE             : {self.se:.6g}")
+        if self.ci is not None:
+            lines.append(f"{int(100*self._level)}% CI         : [{self.ci[0]:.6g}, {self.ci[1]:.6g}]")
         return "\n".join(lines)
 
     def __repr__(self) -> str:
         return repr(self._raw)
+
+
+def _attach_bootstrap(result, inference, level, block_len, n_reps, seed):
+    """Run a block/stationary bootstrap of the post-period gap and attach
+    se / ci to an SC-family result."""
+    result._level = level
+    if inference in ("block", "stationary"):
+        se, lo, hi = _panelkit.bootstrap_mean(
+            list(result.att_path), inference, int(block_len), int(n_reps), int(seed), level
+        )
+        result._boot_se = se
+        result._boot_ci = (lo, hi)
+    return result
 
 
 def _as_matrix(y) -> np.ndarray:
@@ -98,15 +124,30 @@ class SyntheticControl:
     ridge:
         Ridge penalty on the donor weights (0.0 = classic SC).
     inference:
-        ``"placebo"`` to run the in-space placebo test, or ``None``.
+        ``"placebo"`` (in-space placebo p-value), ``"block"`` / ``"stationary"``
+        (block / stationary bootstrap of the post-period gap → SE + CI), or
+        ``None``.
     level:
         Confidence level for reported intervals.
+    block_len, n_reps, seed:
+        Bootstrap settings used when ``inference`` is ``"block"``/``"stationary"``.
     """
 
-    def __init__(self, ridge: float = 0.0, inference: str | None = None, level: float = 0.95):
+    def __init__(
+        self,
+        ridge: float = 0.0,
+        inference: str | None = None,
+        level: float = 0.95,
+        block_len: int = 4,
+        n_reps: int = 2000,
+        seed: int = 0,
+    ):
         self.ridge = ridge
         self.inference = inference
         self.level = level
+        self.block_len = block_len
+        self.n_reps = n_reps
+        self.seed = seed
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
@@ -120,7 +161,9 @@ class SyntheticControl:
             do_placebo,
             self.level,
         )
-        return _Result(raw)
+        return _attach_bootstrap(
+            _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
+        )
 
 
 class AugmentedSC:
@@ -129,34 +172,66 @@ class AugmentedSC:
     Corrects residual pre-treatment imbalance with a ridge outcome model.
     """
 
-    def __init__(self, sc_ridge: float = 0.0, aug_lambda: float | None = None):
+    def __init__(
+        self,
+        sc_ridge: float = 0.0,
+        aug_lambda: float | None = None,
+        inference: str | None = None,
+        level: float = 0.95,
+        block_len: int = 4,
+        n_reps: int = 2000,
+        seed: int = 0,
+    ):
         self.sc_ridge = sc_ridge
         self.aug_lambda = aug_lambda
+        self.inference = inference
+        self.level = level
+        self.block_len = block_len
+        self.n_reps = n_reps
+        self.seed = seed
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
         raw = _panelkit.fit_asc(
             mat, [int(t) for t in treated], int(treat_time), self.sc_ridge, self.aug_lambda
         )
-        return _Result(raw)
+        return _attach_bootstrap(
+            _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
+        )
 
 
 class SyntheticDiD:
     """Synthetic Difference-in-Differences (Arkhangelsky et al. 2021).
 
     The recommended general-purpose default: unit + time weights feeding a
-    doubly-weighted 2×2 difference-in-differences.
+    doubly-weighted 2×2 difference-in-differences. Pass ``inference="block"`` or
+    ``"stationary"`` for a bootstrap SE + CI on the ATT.
     """
 
-    def __init__(self, zeta_scale: float = 1.0):
+    def __init__(
+        self,
+        zeta_scale: float = 1.0,
+        inference: str | None = None,
+        level: float = 0.95,
+        block_len: int = 4,
+        n_reps: int = 2000,
+        seed: int = 0,
+    ):
         self.zeta_scale = zeta_scale
+        self.inference = inference
+        self.level = level
+        self.block_len = block_len
+        self.n_reps = n_reps
+        self.seed = seed
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
         raw = _panelkit.fit_sdid(
             mat, [int(t) for t in treated], int(treat_time), self.zeta_scale
         )
-        return _Result(raw)
+        return _attach_bootstrap(
+            _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
+        )
 
 
 class MCNNM:
