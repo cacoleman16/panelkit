@@ -10,6 +10,8 @@
 // iterators in this numeric code; opt out of the lint crate-wide.
 #![allow(clippy::needless_range_loop)]
 
+pub mod did;
+pub mod fe;
 pub mod mcnnm;
 pub mod panel;
 pub mod result;

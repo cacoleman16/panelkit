@@ -63,3 +63,36 @@ impl PyScResult {
         )
     }
 }
+
+/// Result of a difference-in-differences fit, exposed to Python.
+#[pyclass(name = "DiDResult")]
+#[derive(Clone)]
+pub struct PyDidResult {
+    /// Overall ATT.
+    #[pyo3(get)]
+    pub att: f64,
+    /// Standard error of the overall ATT (cluster-robust / IF-based).
+    #[pyo3(get)]
+    pub se: f64,
+    /// Event-study relative periods.
+    #[pyo3(get)]
+    pub event_time: Vec<i64>,
+    /// Event-study coefficients matching `event_time`.
+    #[pyo3(get)]
+    pub event_att: Vec<f64>,
+    /// Event-study standard errors matching `event_time`.
+    #[pyo3(get)]
+    pub event_se: Vec<f64>,
+}
+
+#[pymethods]
+impl PyDidResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "DiDResult(att={:.6}, se={:.6}, n_event_times={})",
+            self.att,
+            self.se,
+            self.event_time.len()
+        )
+    }
+}

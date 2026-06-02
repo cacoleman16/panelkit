@@ -191,3 +191,83 @@ class MCNNM:
             int(self.seed),
         )
         return _Result(raw)
+
+
+class _DiDResult:
+    """Result of a difference-in-differences fit, with an event-study path."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    @property
+    def att(self) -> float:
+        return self._raw.att
+
+    @property
+    def se(self) -> float:
+        return self._raw.se
+
+    @property
+    def event_time(self) -> np.ndarray:
+        return np.asarray(self._raw.event_time, dtype=int)
+
+    @property
+    def event_att(self) -> np.ndarray:
+        return np.asarray(self._raw.event_att, dtype=float)
+
+    @property
+    def event_se(self) -> np.ndarray:
+        return np.asarray(self._raw.event_se, dtype=float)
+
+    def summary(self) -> str:
+        lines = [f"overall ATT : {self.att:.6g}  (se {self.se:.4g})"]
+        if len(self.event_time):
+            lines.append("event study:")
+            for e, a, s in zip(self.event_time, self.event_att, self.event_se):
+                lines.append(f"  e={e:>3d}: {a:>9.4f}  (se {s:.4f})")
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return repr(self._raw)
+
+
+def _cohorts(treat_start, n) -> list:
+    """Normalize a per-unit treatment-start spec to int cohorts (<0 = never)."""
+    out = []
+    for c in treat_start:
+        if c is None or (isinstance(c, float) and np.isnan(c)):
+            out.append(-1)
+        else:
+            out.append(int(c))
+    if len(out) != n:
+        raise ValueError(f"treat_start length {len(out)} != n_units {n}")
+    return out
+
+
+class TWFE:
+    """Two-way fixed-effects DiD with cluster-robust (by unit) SE.
+
+    Note: biased under staggered adoption with heterogeneous effects; prefer
+    :class:`CallawaySantAnna` or :class:`SunAbraham` there.
+    """
+
+    def fit(self, y, treat_start: Sequence) -> _DiDResult:
+        mat = _as_matrix(y)
+        return _DiDResult(_panelkit.fit_twfe_py(mat, _cohorts(treat_start, mat.shape[0])))
+
+
+class CallawaySantAnna:
+    """Callaway & Sant'Anna (2021) group-time ATTs, aggregated to an overall
+    effect and an event-study path. Never-treated comparison group."""
+
+    def fit(self, y, treat_start: Sequence) -> _DiDResult:
+        mat = _as_matrix(y)
+        return _DiDResult(_panelkit.fit_callaway_py(mat, _cohorts(treat_start, mat.shape[0])))
+
+
+class SunAbraham:
+    """Sun & Abraham (2021) interaction-weighted event study."""
+
+    def fit(self, y, treat_start: Sequence) -> _DiDResult:
+        mat = _as_matrix(y)
+        return _DiDResult(_panelkit.fit_sunab_py(mat, _cohorts(treat_start, mat.shape[0])))

@@ -7,6 +7,7 @@
 
 use pyo3::prelude::*;
 
+mod api_did;
 mod api_sc;
 mod convert;
 mod results;
@@ -25,6 +26,10 @@ fn _panelkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(api_sc::fit_asc, m)?)?;
     m.add_function(wrap_pyfunction!(api_sc::fit_sdid, m)?)?;
     m.add_function(wrap_pyfunction!(api_sc::fit_mcnnm, m)?)?;
+    m.add_function(wrap_pyfunction!(api_did::fit_twfe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(api_did::fit_callaway_py, m)?)?;
+    m.add_function(wrap_pyfunction!(api_did::fit_sunab_py, m)?)?;
     m.add_class::<results::PyScResult>()?;
+    m.add_class::<results::PyDidResult>()?;
     Ok(())
 }

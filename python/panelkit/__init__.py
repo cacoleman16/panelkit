@@ -5,7 +5,15 @@ package re-exports a small, sklearn-style Python surface on top of it.
 """
 
 from ._panelkit import version as _version
-from .estimators import AugmentedSC, MCNNM, SyntheticControl, SyntheticDiD
+from .estimators import (
+    AugmentedSC,
+    CallawaySantAnna,
+    MCNNM,
+    SunAbraham,
+    SyntheticControl,
+    SyntheticDiD,
+    TWFE,
+)
 
 __all__ = [
     "__version__",
@@ -13,6 +21,9 @@ __all__ = [
     "AugmentedSC",
     "SyntheticDiD",
     "MCNNM",
+    "TWFE",
+    "CallawaySantAnna",
+    "SunAbraham",
 ]
 
 __version__ = _version()
