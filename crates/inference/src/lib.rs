@@ -6,8 +6,12 @@
 //! per-replicate seeded substreams, which makes results bit-identical regardless
 //! of thread count.
 
+pub mod bootstrap;
 pub mod ci;
+pub mod parallel;
 pub mod placebo;
 
+pub use bootstrap::{jackknife_se, multiplier_bootstrap};
 pub use ci::{percentile_ci, ConfidenceInterval};
+pub use parallel::{par_map, par_map_items};
 pub use placebo::{sc_placebo, PlaceboResult};

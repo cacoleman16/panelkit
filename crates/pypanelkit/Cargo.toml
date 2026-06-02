@@ -25,6 +25,7 @@ extension-module = ["pyo3/extension-module"]
 [dependencies]
 panelkit-linalg = { workspace = true }
 panelkit-estimators = { workspace = true }
-panelkit-inference = { workspace = true }
+# Multithreaded inference baked into the wheel (rayon, deterministic substreams).
+panelkit-inference = { workspace = true, features = ["parallel"] }
 pyo3 = { workspace = true, features = ["abi3-py39"] }
 numpy = { workspace = true }

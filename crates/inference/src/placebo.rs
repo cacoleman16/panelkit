@@ -53,10 +53,13 @@ pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
 
     let donors = panel.never_treated_units();
     let t = panel.n_periods();
-    let mut placebo_ratios = Vec::with_capacity(donors.len());
 
-    for (idx, &d) in donors.iter().enumerate() {
-        // Pool = all donors except d.
+    // Each donor's placebo fit is independent of the others, so we farm them out
+    // in parallel (when the `parallel` feature is on); the per-donor result does
+    // not depend on ordering, so the output is deterministic regardless.
+    let work: Vec<usize> = (0..donors.len()).collect();
+    let placebo_ratios: Vec<f64> = crate::parallel::par_map_items(work, |idx| {
+        let d = donors[idx];
         let pool: Vec<usize> = donors
             .iter()
             .enumerate()
@@ -64,15 +67,17 @@ pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
             .map(|(_, &u)| u)
             .collect();
         if pool.is_empty() {
-            continue;
+            return f64::NAN;
         }
         let (pre, post) = donor_blocks(panel, &pool, t0);
-        // Placebo-treated series = donor d's own outcomes.
         let y_pre: Vec<f64> = (0..t0).map(|p| panel.outcome(d, p)).collect();
         let y_post: Vec<f64> = (t0..t).map(|p| panel.outcome(d, p)).collect();
         let fit = fit_series(&y_pre, &y_post, &pre, &post, pool, cfg.ridge);
-        placebo_ratios.push(fit.rmspe_ratio());
-    }
+        fit.rmspe_ratio()
+    })
+    .into_iter()
+    .filter(|r| !r.is_nan())
+    .collect();
 
     let n = placebo_ratios.len();
     let n_extreme = placebo_ratios
