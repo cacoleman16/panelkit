@@ -19,6 +19,12 @@ classifiers = [
 ]
 dependencies = ["numpy>=1.21"]
 
+[project.urls]
+Homepage = "https://github.com/panelkit/panelkit"
+Repository = "https://github.com/panelkit/panelkit"
+Documentation = "https://github.com/panelkit/panelkit/blob/main/GUIDE.md"
+Issues = "https://github.com/panelkit/panelkit/issues"
+
 [project.optional-dependencies]
 test = ["pytest>=7", "scipy>=1.7"]
 
@@ -27,3 +33,4 @@ python-source = "python"
 module-name = "panelkit._panelkit"
 manifest-path = "crates/pypanelkit/Cargo.toml"
 features = ["extension-module"]
+include = ["LICENSE-MIT", "LICENSE-APACHE", "GUIDE.md", "BENCHMARKS.md"]
