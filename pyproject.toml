@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "panelkit"
+version = "0.0.1"
+description = "Fast, from-scratch causal-inference estimators for panel/geo experiments (SC, ASC, SDID, DiD, MC-NNM)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "panelkit contributors" }]
+keywords = ["causal-inference", "synthetic-control", "difference-in-differences", "econometrics", "panel-data"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Science/Research",
+]
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "scipy>=1.7"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "panelkit._panelkit"
+manifest-path = "crates/pypanelkit/Cargo.toml"
+features = ["extension-module"]

@@ -1,0 +1,30 @@
+[package]
+name = "pypanelkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Python bindings for panelkit (built as the _panelkit extension module)."
+
+[lib]
+name = "_panelkit"
+crate-type = ["cdylib", "rlib"]
+# This crate is pure Python-binding glue, validated via pytest (see python/tests).
+# A standalone Rust test binary can't resolve libpython at runtime, so skip it.
+test = false
+doctest = false
+
+[features]
+# Enabled by maturin for the shipped wheel; left OFF for `cargo test`/`cargo
+# build` so the binding links against libpython normally (extension-module's
+# dynamic-lookup is only valid when loaded by the interpreter).
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+panelkit-linalg = { workspace = true }
+panelkit-estimators = { workspace = true }
+panelkit-inference = { workspace = true }
+pyo3 = { workspace = true, features = ["abi3-py39"] }
+numpy = { workspace = true }

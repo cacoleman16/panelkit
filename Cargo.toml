@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/linalg",
+    "crates/estimators",
+    "crates/inference",
+    "crates/pypanelkit",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.74"
+license = "MIT OR Apache-2.0"
+authors = ["panelkit contributors"]
+repository = "https://github.com/panelkit/panelkit"
+
+[workspace.dependencies]
+# Internal crates
+panelkit-linalg = { path = "crates/linalg" }
+panelkit-estimators = { path = "crates/estimators" }
+panelkit-inference = { path = "crates/inference" }
+
+# The numerical core has NO external numeric deps. rayon is optional and lives
+# behind a feature flag so the reusable core stays dependency-free by default.
+rayon = "1.10"
+
+# Python binding deps — confined to the pypanelkit crate only.
+pyo3 = { version = "0.22", default-features = false }
+numpy = "0.22"
+
+# Dev-only.
+proptest = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
