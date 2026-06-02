@@ -20,10 +20,10 @@ classifiers = [
 dependencies = ["numpy>=1.21"]
 
 [project.urls]
-Homepage = "https://github.com/panelkit/panelkit"
-Repository = "https://github.com/panelkit/panelkit"
-Documentation = "https://github.com/panelkit/panelkit/blob/main/GUIDE.md"
-Issues = "https://github.com/panelkit/panelkit/issues"
+Homepage = "https://github.com/cacoleman16/panelkit"
+Repository = "https://github.com/cacoleman16/panelkit"
+Documentation = "https://github.com/cacoleman16/panelkit/blob/main/GUIDE.md"
+Issues = "https://github.com/cacoleman16/panelkit/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=7", "scipy>=1.7"]

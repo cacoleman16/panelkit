@@ -20,9 +20,7 @@
 
 Version is set to **`0.1.0`** (`Cargo.toml [workspace.package]` + `pyproject.toml`).
 
-1. **Pick the real project name + repo URL.** Update `name`, `[project.urls]`,
-   and `repository` in `pyproject.toml` / `Cargo.toml` if not `panelkit`. The
-   `github.com/panelkit/panelkit` URLs are placeholders.
+1. Repo + metadata URLs are set to `github.com/cacoleman16/panelkit`.
 2. **(If re-releasing) bump the version** — PyPI versions are immutable; you
    cannot overwrite `0.1.0` once uploaded.
 3. **Set up Trusted Publishing on PyPI** (recommended, no tokens):
