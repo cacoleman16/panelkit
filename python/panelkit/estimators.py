@@ -193,6 +193,99 @@ class MCNNM:
         return _Result(raw)
 
 
+class _CPASCResult:
+    """Result of a CP-ASC-family fit: pooled ATT, per-unit detail, conformal p."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    @property
+    def att(self) -> float:
+        return self._raw.att
+
+    @property
+    def p_value(self) -> float:
+        """Conformal block-permutation p-value."""
+        return self._raw.p_value
+
+    @property
+    def unit_ids(self) -> np.ndarray:
+        return np.asarray(self._raw.unit_ids, dtype=int)
+
+    @property
+    def unit_att(self) -> np.ndarray:
+        return np.asarray(self._raw.unit_att, dtype=float)
+
+    @property
+    def unit_mspe(self) -> np.ndarray:
+        return np.asarray(self._raw.unit_mspe, dtype=float)
+
+    @property
+    def unit_weight(self) -> np.ndarray:
+        return np.asarray(self._raw.unit_weight, dtype=float)
+
+    @property
+    def pooled_residual(self) -> np.ndarray:
+        return np.asarray(self._raw.pooled_residual, dtype=float)
+
+    def summary(self) -> str:
+        lines = [
+            f"pooled ATT      : {self.att:.6g}",
+            f"conformal p     : {self.p_value:.4g}",
+            f"# treated units : {len(self.unit_ids)}",
+            "per-unit (id: att, weight, mspe):",
+        ]
+        for i, a, w, m in zip(self.unit_ids, self.unit_att, self.unit_weight, self.unit_mspe):
+            lines.append(f"  {int(i):>3d}: att={a:8.4f}  w={w:6.4f}  mspe={m:.4g}")
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return repr(self._raw)
+
+
+class CPASC:
+    """Conformal Pooled Augmented Synthetic Control family (novel).
+
+    Fits one augmented SC per treated unit, then pools the per-unit effects with
+    empirical-Bayes shrinkage and tests the pooled effect by conformal block
+    permutation. Modes:
+
+    - ``"mspe"`` (CP-ASC): inverse-MSPE empirical-Bayes pooling.
+    - ``"stratified"`` (Strat-CP-ASC): stratify by size into ``n_strata`` bins,
+      pool within each, average — robust to a single extremal large unit.
+    - ``"cumulative"`` (C-AS-CP-ASC): baseline-size-weighted target (maps to
+      total/cumulative dollar lift rather than the equal-weighted average).
+    """
+
+    def __init__(
+        self,
+        mode: str = "mspe",
+        n_strata: int = 3,
+        block_len: int | None = None,
+        sc_ridge: float = 0.0,
+        aug_lambda: float | None = None,
+    ):
+        self.mode = mode
+        self.n_strata = n_strata
+        self.block_len = block_len
+        self.sc_ridge = sc_ridge
+        self.aug_lambda = aug_lambda
+
+    def fit(self, y, treated: Sequence[int], treat_time: int) -> _CPASCResult:
+        mat = _as_matrix(y)
+        raw = _panelkit.fit_cpasc(
+            mat,
+            [int(t) for t in treated],
+            int(treat_time),
+            self.mode,
+            int(self.n_strata),
+            self.block_len,
+            self.sc_ridge,
+            self.aug_lambda,
+        )
+        return _CPASCResult(raw)
+
+
 class _DiDResult:
     """Result of a difference-in-differences fit, with an event-study path."""
 

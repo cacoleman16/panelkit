@@ -2,13 +2,15 @@
 
 use numpy::PyReadonlyArray2;
 use panelkit_estimators::mcnnm::{fit_mcnnm_at, McnnmConfig};
+use panelkit_estimators::sc::cpasc::{fit_at as fit_cpasc_at, CpascConfig, PoolMode};
 use panelkit_estimators::sc::{fit_asc_at, fit_at, fit_sdid_at, AscConfig, ScConfig, SdidConfig};
 use panelkit_estimators::{Panel, ScFit};
 use panelkit_inference::{percentile_ci, sc_placebo};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::convert::mat_from_numpy;
-use crate::results::PyScResult;
+use crate::results::{PyCpascResult, PyScResult};
 
 /// Assemble a bare [`PyScResult`] (no inference attached) from an [`ScFit`].
 fn result_from_fit(fit: &ScFit) -> PyScResult {
@@ -122,4 +124,51 @@ pub fn fit_mcnnm(
         seed,
     };
     Ok(result_from_fit(&fit_mcnnm_at(&panel, treat_time, cfg)))
+}
+
+/// Fit a CP-ASC-family estimator (novel). `mode` is "mspe" (CP-ASC),
+/// "stratified" (Strat-CP-ASC), or "cumulative" (C-AS-CP-ASC).
+#[pyfunction]
+#[pyo3(signature = (y, treated, treat_time, mode="mspe", n_strata=3, block_len=None, sc_ridge=0.0, aug_lambda=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn fit_cpasc(
+    y: PyReadonlyArray2<f64>,
+    treated: Vec<usize>,
+    treat_time: usize,
+    mode: &str,
+    n_strata: usize,
+    block_len: Option<usize>,
+    sc_ridge: f64,
+    aug_lambda: Option<f64>,
+) -> PyResult<PyCpascResult> {
+    let pool = match mode {
+        "mspe" => PoolMode::Mspe,
+        "stratified" => PoolMode::Stratified { n_strata },
+        "cumulative" => PoolMode::Cumulative,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown CP-ASC mode '{other}' (expected mspe/stratified/cumulative)"
+            )))
+        }
+    };
+    let panel = Panel::block(mat_from_numpy(&y), &treated, treat_time);
+    let cfg = CpascConfig {
+        asc: AscConfig {
+            sc_ridge,
+            aug_lambda,
+        },
+        mode: pool,
+        block_len,
+    };
+    let fit = fit_cpasc_at(&panel, treat_time, cfg);
+    Ok(PyCpascResult {
+        att: fit.att,
+        p_value: fit.p_value,
+        unit_ids: fit.units.iter().map(|u| u.unit).collect(),
+        unit_att: fit.units.iter().map(|u| u.att).collect(),
+        unit_mspe: fit.units.iter().map(|u| u.mspe).collect(),
+        unit_weight: fit.units.iter().map(|u| u.weight).collect(),
+        pooled_residual: fit.pooled_residual,
+        t0: fit.t0,
+    })
 }

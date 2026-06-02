@@ -23,6 +23,17 @@ class SCResult:
     inference_distribution: Optional[list[float]]
     def __repr__(self) -> str: ...
 
+class CPASCResult:
+    att: float
+    p_value: float
+    unit_ids: list[int]
+    unit_att: list[float]
+    unit_mspe: list[float]
+    unit_weight: list[float]
+    pooled_residual: list[float]
+    t0: int
+    def __repr__(self) -> str: ...
+
 class DiDResult:
     att: float
     se: float
@@ -76,6 +87,16 @@ def fit_mcnnm(
     tol: float = ...,
     seed: int = ...,
 ) -> SCResult: ...
+def fit_cpasc(
+    y: npt.NDArray[np.float64],
+    treated: Sequence[int],
+    treat_time: int,
+    mode: str = ...,
+    n_strata: int = ...,
+    block_len: Optional[int] = ...,
+    sc_ridge: float = ...,
+    aug_lambda: Optional[float] = ...,
+) -> CPASCResult: ...
 def fit_twfe_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> DiDResult: ...
 def fit_callaway_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> DiDResult: ...
 def fit_sunab_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> DiDResult: ...

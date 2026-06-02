@@ -97,6 +97,48 @@ impl PyDidResult {
     }
 }
 
+/// Result of a CP-ASC-family fit, exposed to Python.
+#[pyclass(name = "CPASCResult")]
+#[derive(Clone)]
+pub struct PyCpascResult {
+    /// Pooled ATT.
+    #[pyo3(get)]
+    pub att: f64,
+    /// Conformal block-permutation p-value.
+    #[pyo3(get)]
+    pub p_value: f64,
+    /// Treated unit indices.
+    #[pyo3(get)]
+    pub unit_ids: Vec<usize>,
+    /// Per-unit ATT.
+    #[pyo3(get)]
+    pub unit_att: Vec<f64>,
+    /// Per-unit pre-period MSPE (fit quality).
+    #[pyo3(get)]
+    pub unit_mspe: Vec<f64>,
+    /// Per-unit pooling weight.
+    #[pyo3(get)]
+    pub unit_weight: Vec<f64>,
+    /// Pooled residual path (length T).
+    #[pyo3(get)]
+    pub pooled_residual: Vec<f64>,
+    /// First post-period index.
+    #[pyo3(get)]
+    pub t0: usize,
+}
+
+#[pymethods]
+impl PyCpascResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "CPASCResult(att={:.6}, p={:.4}, n_treated={})",
+            self.att,
+            self.p_value,
+            self.unit_ids.len()
+        )
+    }
+}
+
 /// One 2×2 comparison in a Goodman-Bacon decomposition.
 #[pyclass(name = "BaconComponent")]
 #[derive(Clone)]

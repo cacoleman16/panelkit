@@ -21,6 +21,7 @@ use panelkit_linalg::factor::cholesky::Cholesky;
 use panelkit_linalg::ops::matmul::{matvec, syrk_aat};
 use panelkit_linalg::ops::norms::nrm2;
 use panelkit_linalg::opt::simplex::sc_weights;
+use panelkit_linalg::Mat;
 
 /// Configuration for augmented SC.
 #[derive(Clone, Copy, Debug)]
@@ -61,11 +62,25 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: AscConfig) -> ScFit {
     let y_pre: Vec<f64> = treated_mean[..t0].to_vec();
     let y_post: Vec<f64> = treated_mean[t0..].to_vec();
 
+    fit_series(&y_pre, &y_post, &z0, &donor_post, donor_ids, cfg)
+}
+
+/// Fit augmented SC for an explicit treated series against explicit donor
+/// blocks. Used by `fit_at` and by the CP-ASC family (which fits one ASC per
+/// treated unit). `z0` is `T_pre × J`, `donor_post` is `T_post × J`.
+pub fn fit_series(
+    y_pre: &[f64],
+    y_post: &[f64],
+    z0: &Mat,
+    donor_post: &Mat,
+    donor_ids: Vec<usize>,
+    cfg: AscConfig,
+) -> ScFit {
     // 1. SC weights on the pre-period.
-    let w = sc_weights(&z0, &y_pre, cfg.sc_ridge).w;
+    let w = sc_weights(z0, y_pre, cfg.sc_ridge).w;
 
     // 2. Pre-period imbalance.
-    let pre_hat = matvec(&z0, &w);
+    let pre_hat = matvec(z0, &w);
     let imbalance: Vec<f64> = y_pre
         .iter()
         .zip(pre_hat.iter())
@@ -74,7 +89,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: AscConfig) -> ScFit {
 
     // 3. Ridge map from donor pre-outcomes to post-outcomes:
     //    G = Z₀ Z₀ᵀ  (T_pre × T_pre), factor (G + λI) once.
-    let g = syrk_aat(&z0); // T_pre × T_pre
+    let g = syrk_aat(z0); // T_pre × T_pre
     let t_pre = z0.rows();
     let lambda = cfg.aug_lambda.unwrap_or_else(|| {
         // Default: 0.1 × mean diagonal of G (mean spectral scale).
@@ -94,7 +109,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: AscConfig) -> ScFit {
                                                 // SC part: donor_post[t,·] · w
         let sc_part: f64 = dpost_row.iter().zip(w.iter()).map(|(a, b)| a * b).sum();
         // Ridge map: η_t = (G + λI)⁻¹ Z₀ donor_post[t,·]
-        let rhs = matvec(&z0, &dpost_row); // T_pre
+        let rhs = matvec(z0, &dpost_row); // T_pre
         let eta = chol.solve_vec(&rhs); // T_pre
         let aug: f64 = imbalance.iter().zip(eta.iter()).map(|(a, b)| a * b).sum();
         cf_post[t] = sc_part + aug;
@@ -120,7 +135,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: AscConfig) -> ScFit {
         att_path,
         att,
         counterfactual_post: cf_post,
-        treated_post: y_post,
+        treated_post: y_post.to_vec(),
         pre_rmspe,
         post_rmspe,
     }
