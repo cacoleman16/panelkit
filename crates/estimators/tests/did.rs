@@ -4,7 +4,9 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use panelkit_estimators::did::{bacon_decompose, fit_callaway, fit_sunab, fit_twfe, BaconKind};
+use panelkit_estimators::did::{
+    bacon_decompose, fit_callaway, fit_callaway_with, fit_sunab, fit_twfe, BaconKind, ControlGroup,
+};
 use panelkit_estimators::Panel;
 use panelkit_linalg::rng::Xoshiro256pp;
 use panelkit_linalg::Mat;
@@ -132,6 +134,58 @@ fn twfe_biased_but_cs_sa_correct_under_heterogeneity() {
     assert!(
         twfe_err > cs_err,
         "expected TWFE ({twfe}) more biased than C&S ({cs}); true={true_att}"
+    );
+}
+
+#[test]
+fn callaway_not_yet_treated_recovers_truth() {
+    let (panel, true_att) = staggered_panel(1.0, 5.0, 7);
+    let cs = fit_callaway_with(&panel, ControlGroup::NotYetTreated);
+    assert!(
+        (cs.overall_att - true_att).abs() < 0.4,
+        "C&S(not-yet) overall {} vs true {}",
+        cs.overall_att,
+        true_att
+    );
+}
+
+#[test]
+fn callaway_not_yet_treated_works_without_never_treated() {
+    // A panel with NO never-treated units: only the not-yet-treated comparison
+    // is usable. (Two cohorts, everyone eventually treated.)
+    let mut rng = Xoshiro256pp::seed_from_u64(8);
+    let per = 30usize;
+    let n = per * 2;
+    let t = 16usize;
+    let (g1, g2) = (5usize, 11usize);
+    let ufe: Vec<f64> = (0..n).map(|_| 3.0 + rng.next_normal()).collect();
+    let mut tfe = vec![0.0; t];
+    let mut acc = 0.0;
+    for v in tfe.iter_mut() {
+        acc += 0.05 * rng.next_normal();
+        *v = acc;
+    }
+    let mut starts = vec![None; n];
+    let mut y = Mat::zeros(n, t);
+    let (e1, e2) = (2.0_f64, 2.0_f64); // homogeneous so the simple average ATT is 2.0
+    for i in 0..n {
+        let (s, e) = if i < per { (g1, e1) } else { (g2, e2) };
+        starts[i] = Some(s);
+        for p in 0..t {
+            let mut v = ufe[i] + tfe[p] + 0.05 * rng.next_normal();
+            if p >= s {
+                v += e;
+            }
+            y.set(i, p, v);
+        }
+    }
+    let panel = Panel::new(y, starts);
+    // never-treated variant would panic; not-yet-treated must work.
+    let cs = fit_callaway_with(&panel, ControlGroup::NotYetTreated);
+    assert!(
+        (cs.overall_att - 2.0).abs() < 0.4,
+        "C&S(not-yet) without never-treated: {} vs 2.0",
+        cs.overall_att
     );
 }
 

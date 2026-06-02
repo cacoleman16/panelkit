@@ -144,8 +144,18 @@ falsification check.
 **Use when.** Staggered adoption; you want an honest event study and an overall
 ATT robust to treatment-effect heterogeneity.
 
+**Control group.** `control_group="never"` (never-treated, default) or
+`"notyet"` (not-yet-treated: never-treated units plus cohorts treated strictly
+after the periods involved). Not-yet-treated gives a larger control pool and
+**works even when there are no never-treated units**.
+
 **Inference.** Influence-function SEs (analytic) or **multiplier (wild)
 bootstrap**, clustered by unit.
+
+> *Follow-up:* the doubly-robust / covariate-adjusted C&S variant needs unit
+> covariates, which the current `Panel` does not carry; without covariates it
+> coincides with the simple estimator above. Adding a covariate channel to
+> `Panel` is the clean next step for that variant.
 
 ---
 

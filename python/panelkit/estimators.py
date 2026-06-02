@@ -426,11 +426,25 @@ class TWFE:
 
 class CallawaySantAnna:
     """Callaway & Sant'Anna (2021) group-time ATTs, aggregated to an overall
-    effect and an event-study path. Never-treated comparison group."""
+    effect and an event-study path.
+
+    Parameters
+    ----------
+    control_group:
+        ``"never"`` (never-treated, default) or ``"notyet"`` (not-yet-treated —
+        a larger control pool that also works without never-treated units).
+    """
+
+    def __init__(self, control_group: str = "never"):
+        self.control_group = control_group
 
     def fit(self, y, treat_start: Sequence) -> _DiDResult:
         mat = _as_matrix(y)
-        return _DiDResult(_panelkit.fit_callaway_py(mat, _cohorts(treat_start, mat.shape[0])))
+        return _DiDResult(
+            _panelkit.fit_callaway_py(
+                mat, _cohorts(treat_start, mat.shape[0]), self.control_group
+            )
+        )
 
 
 class SunAbraham:

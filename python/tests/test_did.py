@@ -59,6 +59,18 @@ def test_none_means_never_treated():
     assert abs(res.att - true_att) < 0.4
 
 
+def test_callaway_not_yet_treated():
+    Y, ts, true_att = staggered(1.0, 5.0, seed=7)
+    res = CallawaySantAnna(control_group="notyet").fit(Y, ts)
+    assert abs(res.att - true_att) < 0.4
+
+
+def test_callaway_bad_control_raises():
+    Y, ts, _ = staggered(1.0, 5.0, seed=8)
+    with pytest.raises(ValueError):
+        CallawaySantAnna(control_group="bogus").fit(Y, ts)
+
+
 def test_bacon_reproduces_twfe():
     Y, ts, _ = staggered(1.0, 8.0, seed=5)
     twfe = TWFE().fit(Y, ts).att

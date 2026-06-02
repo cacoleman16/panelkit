@@ -5,8 +5,11 @@
 //! never-treated unit.
 
 use numpy::PyReadonlyArray2;
-use panelkit_estimators::did::{bacon_decompose, fit_callaway, fit_sunab, fit_twfe, BaconKind};
+use panelkit_estimators::did::{
+    bacon_decompose, fit_callaway_with, fit_sunab, fit_twfe, BaconKind, ControlGroup,
+};
 use panelkit_estimators::Panel;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::convert::mat_from_numpy;
@@ -36,10 +39,25 @@ pub fn fit_twfe_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyDi
 }
 
 /// Callaway & Sant'Anna group-time ATTs aggregated to overall + event study.
+/// `control` is "never" (never-treated) or "notyet" (not-yet-treated).
 #[pyfunction]
-pub fn fit_callaway_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyDidResult> {
+#[pyo3(signature = (y, cohorts, control="never"))]
+pub fn fit_callaway_py(
+    y: PyReadonlyArray2<f64>,
+    cohorts: Vec<i64>,
+    control: &str,
+) -> PyResult<PyDidResult> {
+    let cg = match control {
+        "never" => ControlGroup::NeverTreated,
+        "notyet" | "not_yet_treated" => ControlGroup::NotYetTreated,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown control group '{other}' (expected never/notyet)"
+            )))
+        }
+    };
     let panel = build_panel(y, cohorts);
-    let cs = fit_callaway(&panel);
+    let cs = fit_callaway_with(&panel, cg);
     Ok(PyDidResult {
         att: cs.overall_att,
         se: cs.overall_se,

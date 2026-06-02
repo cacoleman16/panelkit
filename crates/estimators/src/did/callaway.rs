@@ -56,15 +56,32 @@ fn se_from_if(influence: &[f64]) -> f64 {
     (ss / (n as f64 * n as f64)).sqrt()
 }
 
+/// Comparison ("control") group for the group-time ATTs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlGroup {
+    /// Use only never-treated units as controls (requires some never-treated).
+    NeverTreated,
+    /// Use not-yet-treated units (never-treated + cohorts treated strictly after
+    /// the periods involved). Larger control pool; valid without never-treated.
+    NotYetTreated,
+}
+
 /// Fit Callaway–Sant'Anna with a never-treated comparison group.
 pub fn fit(panel: &Panel) -> CsResult {
+    fit_with(panel, ControlGroup::NeverTreated)
+}
+
+/// Fit Callaway–Sant'Anna with an explicit comparison group.
+pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
     let n = panel.n_units();
     let t = panel.n_periods();
     let never: Vec<usize> = panel.never_treated_units();
-    assert!(
-        !never.is_empty(),
-        "Callaway–Sant'Anna (never-treated variant) needs never-treated units"
-    );
+    if control == ControlGroup::NeverTreated {
+        assert!(
+            !never.is_empty(),
+            "Callaway–Sant'Anna (never-treated variant) needs never-treated units"
+        );
+    }
 
     // Cohorts with a usable base period (g >= 1).
     let cohorts: Vec<usize> = panel.cohorts().into_iter().filter(|&g| g >= 1).collect();
@@ -76,7 +93,25 @@ pub fn fit(panel: &Panel) -> CsResult {
             .collect()
     };
 
-    let nc = never.len();
+    // Comparison set for cohort `g` at evaluation `period` (base = g-1):
+    // - NeverTreated: the never-treated units.
+    // - NotYetTreated: units untreated at BOTH the base and the evaluation
+    //   period and not in cohort g (i.e. treat_start None or > max(base, period)).
+    let comparison = |g: usize, period: usize| -> Vec<usize> {
+        match control {
+            ControlGroup::NeverTreated => never.clone(),
+            ControlGroup::NotYetTreated => {
+                let cutoff = (g - 1).max(period);
+                (0..n)
+                    .filter(|&i| match panel.treat_start()[i] {
+                        None => true,
+                        Some(s) => s > cutoff && s != g,
+                    })
+                    .collect()
+            }
+        }
+    };
+
     let mut group_time = Vec::new();
 
     for &g in &cohorts {
@@ -90,11 +125,16 @@ pub fn fit(panel: &Panel) -> CsResult {
             if period == base {
                 continue; // base period: ATT ≡ 0 by construction
             }
+            let comp = comparison(g, period);
+            let nc = comp.len();
+            if nc == 0 {
+                continue; // no valid control for this (g, t)
+            }
             // Long differences relative to the base period.
             let dy = |i: usize| panel.outcome(i, period) - panel.outcome(i, base);
 
             let m_g: f64 = units_g.iter().map(|&i| dy(i)).sum::<f64>() / ng as f64;
-            let m_c: f64 = never.iter().map(|&i| dy(i)).sum::<f64>() / nc as f64;
+            let m_c: f64 = comp.iter().map(|&i| dy(i)).sum::<f64>() / nc as f64;
             let att = m_g - m_c;
 
             // Influence function over all N units (total-N scaling, consistent
@@ -105,7 +145,7 @@ pub fn fit(panel: &Panel) -> CsResult {
             for &i in &units_g {
                 influence[i] = (dy(i) - m_g) / p_g;
             }
-            for &i in &never {
+            for &i in &comp {
                 influence[i] -= (dy(i) - m_c) / p_c;
             }
 
