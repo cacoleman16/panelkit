@@ -162,7 +162,9 @@ impl Mat {
     /// Copy row `i` into a fresh `Vec` (strided gather — avoid in hot loops).
     pub fn row_copy(&self, i: usize) -> Vec<f64> {
         debug_assert!(i < self.rows);
-        (0..self.cols).map(|j| self.data[i + j * self.rows]).collect()
+        (0..self.cols)
+            .map(|j| self.data[i + j * self.rows])
+            .collect()
     }
 
     /// Transpose into a new matrix.

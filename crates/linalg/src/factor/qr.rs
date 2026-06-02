@@ -25,7 +25,10 @@ impl Qr {
         let m = a.rows();
         let n = a.cols();
         if m < n {
-            return Err(LinalgError::DimMismatch { expected: n, got: m });
+            return Err(LinalgError::DimMismatch {
+                expected: n,
+                got: m,
+            });
         }
         let mut packed = a.clone();
         let mut betas = vec![0.0; n];

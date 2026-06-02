@@ -6,11 +6,11 @@
 //! by construction).
 
 use crate::error::Result;
+use crate::factor::cholesky::Cholesky;
 use crate::factor::qr::Qr;
 use crate::matrix::Mat;
 use crate::ops::matmul::{matvec, matvec_t, syrk_ata};
 use crate::ops::norms::nrm2;
-use crate::factor::cholesky::Cholesky;
 
 /// Solve `min_b ‖X b − y‖₂` via QR. `X` is `n×p` with `n >= p`.
 pub fn ols(x: &Mat, y: &[f64]) -> Result<Vec<f64>> {

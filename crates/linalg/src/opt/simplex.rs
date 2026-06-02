@@ -198,7 +198,11 @@ pub fn solve_pg(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> S
     let mut last = f64::INFINITY;
     for k in 0..max_iter {
         let g = grad(gram, b, eta, &w);
-        let trial: Vec<f64> = w.iter().zip(g.iter()).map(|(wi, gi)| wi - step * gi).collect();
+        let trial: Vec<f64> = w
+            .iter()
+            .zip(g.iter())
+            .map(|(wi, gi)| wi - step * gi)
+            .collect();
         let wnext = project_simplex(&trial);
         // Convergence: movement size.
         let mut mv = 0.0;

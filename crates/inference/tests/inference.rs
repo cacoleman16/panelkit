@@ -37,9 +37,9 @@ fn bootstrap_is_thread_count_invariant() {
     // Each draw is a pure function of (seed, replicate index), so a serial
     // recomputation of replicate k must match draw k exactly.
     use panelkit_linalg::rng::Xoshiro256pp;
-    const P: f64 = 0.7236067977499790;
-    const NEG: f64 = -0.6180339887498949;
-    const POS: f64 = 1.6180339887498949;
+    const P: f64 = 0.723606797749979;
+    const NEG: f64 = -0.618033988749895;
+    const POS: f64 = 1.618033988749895;
     let n = influence.len();
     for k in [0usize, 1, 500, 1999] {
         let mut rng = Xoshiro256pp::substream(999, k as u64);

@@ -91,7 +91,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: AscConfig) -> ScFit {
     let mut cf_post = vec![0.0; t_post];
     for t in 0..t_post {
         let dpost_row = donor_post.row_copy(t); // length J
-        // SC part: donor_post[t,·] · w
+                                                // SC part: donor_post[t,·] · w
         let sc_part: f64 = dpost_row.iter().zip(w.iter()).map(|(a, b)| a * b).sum();
         // Ridge map: η_t = (G + λI)⁻¹ Z₀ donor_post[t,·]
         let rhs = matvec(&z0, &dpost_row); // T_pre

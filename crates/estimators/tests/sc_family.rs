@@ -72,7 +72,11 @@ fn sdid_recovers_effect() {
 fn sdid_zero_effect_near_zero() {
     let panel = factor_panel(0.0, 303, 16, 30, 22);
     let fit = fit_sdid(&panel, SdidConfig::default());
-    assert!(fit.att.abs() < 0.5, "SDID att should be ~0, got {}", fit.att);
+    assert!(
+        fit.att.abs() < 0.5,
+        "SDID att should be ~0, got {}",
+        fit.att
+    );
 }
 
 #[test]

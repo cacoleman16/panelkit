@@ -17,9 +17,9 @@ use crate::parallel::par_map;
 /// wild-bootstrap multiplier.
 #[inline]
 fn mammen(rng: &mut panelkit_linalg::rng::Xoshiro256pp) -> f64 {
-    const P: f64 = 0.7236067977499790; // (√5 + 1) / (2√5)
-    const A: f64 = -0.6180339887498949; // -(√5 − 1)/2
-    const B: f64 = 1.6180339887498949; //  (√5 + 1)/2
+    const P: f64 = 0.723606797749979; // (√5 + 1) / (2√5)
+    const A: f64 = -0.618033988749895; // -(√5 − 1)/2
+    const B: f64 = 1.618033988749895; //  (√5 + 1)/2
     if rng.next_f64() < P {
         A
     } else {

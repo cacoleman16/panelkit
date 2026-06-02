@@ -85,7 +85,11 @@ pub fn fit(panel: &Panel) -> TwfeFit {
     // Small-sample cluster correction G/(G-1).
     let g = n as f64;
     let corr = if n > 1 { g / (g - 1.0) } else { 1.0 };
-    let var = if den > 0.0 { corr * meat / (den * den) } else { 0.0 };
+    let var = if den > 0.0 {
+        corr * meat / (den * den)
+    } else {
+        0.0
+    };
 
     TwfeFit {
         att: beta,

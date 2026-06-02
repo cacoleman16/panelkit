@@ -11,10 +11,10 @@ use panelkit_linalg::factor::qr::Qr;
 use panelkit_linalg::factor::svd::Svd;
 use panelkit_linalg::factor::svd_gram::{singular_values_via_gram, svd_via_gram};
 use panelkit_linalg::matrix::Mat;
-use panelkit_linalg::opt::simplex::{project_simplex, sc_weights, solve_fw, solve_pg};
-use panelkit_linalg::opt::softthresh::svt;
 use panelkit_linalg::ops::matmul::{matmul, matvec};
 use panelkit_linalg::ops::norms::frobenius;
+use panelkit_linalg::opt::simplex::{project_simplex, sc_weights, solve_fw, solve_pg};
+use panelkit_linalg::opt::softthresh::svt;
 use panelkit_linalg::rng::Xoshiro256pp;
 
 const TOL: f64 = 1e-9;
@@ -102,7 +102,10 @@ fn qr_least_squares_matches_normal_equations() {
     let bhat = qr.solve_lstsq(&y);
     let bnorm = panelkit_linalg::solve::lstsq::ols_normal(&x, &y).unwrap();
     for i in 0..3 {
-        assert!((bhat[i] - bnorm[i]).abs() < 1e-7, "QR vs normal-eq disagree");
+        assert!(
+            (bhat[i] - bnorm[i]).abs() < 1e-7,
+            "QR vs normal-eq disagree"
+        );
     }
 }
 
@@ -245,7 +248,11 @@ fn sc_weights_recover_planted_convex_combo() {
     for t in 0..m {
         err += (yhat[t] - y[t]).powi(2);
     }
-    assert!(err.sqrt() < 1e-6, "SC pre-fit error too large: {}", err.sqrt());
+    assert!(
+        err.sqrt() < 1e-6,
+        "SC pre-fit error too large: {}",
+        err.sqrt()
+    );
     // Weights on the simplex.
     let sum: f64 = sol.w.iter().sum();
     assert!((sum - 1.0).abs() < 1e-8);
@@ -274,7 +281,10 @@ fn simplex_fw_and_pg_agree() {
     };
     let of = obj(&fw.w);
     let op = obj(&pg.w);
-    assert!((of - op).abs() < 1e-5, "FW {of} vs PG {op} objective disagree");
+    assert!(
+        (of - op).abs() < 1e-5,
+        "FW {of} vs PG {op} objective disagree"
+    );
 }
 
 #[test]

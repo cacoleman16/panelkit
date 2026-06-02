@@ -94,11 +94,7 @@ impl Panel {
     /// The set of distinct treatment-start periods among treated units
     /// (the adoption "cohorts"), sorted ascending.
     pub fn cohorts(&self) -> Vec<usize> {
-        let mut cs: Vec<usize> = self
-            .treat_start
-            .iter()
-            .filter_map(|&t| t)
-            .collect();
+        let mut cs: Vec<usize> = self.treat_start.iter().filter_map(|&t| t).collect();
         cs.sort_unstable();
         cs.dedup();
         cs

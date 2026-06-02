@@ -40,7 +40,11 @@ fn sc_recovers_planted_effect() {
     let (panel, _t0) = planted_panel(tau, 11);
     let fit = fit_sc(&panel, ScConfig::default());
     // Pre-fit should be near-perfect (relative error ~1e-7 on values ~10).
-    assert!(fit.pre_rmspe < 1e-4, "pre-RMSPE too large: {}", fit.pre_rmspe);
+    assert!(
+        fit.pre_rmspe < 1e-4,
+        "pre-RMSPE too large: {}",
+        fit.pre_rmspe
+    );
     // ATT should recover tau.
     assert!(
         (fit.att - tau).abs() < 1e-4,
@@ -51,8 +55,16 @@ fn sc_recovers_planted_effect() {
     // Weights concentrate on donors 1 and 2 (≈0.6, 0.4).
     let id1 = fit.donor_ids.iter().position(|&u| u == 1).unwrap();
     let id2 = fit.donor_ids.iter().position(|&u| u == 2).unwrap();
-    assert!((fit.weights[id1] - 0.6).abs() < 1e-2, "w1={}", fit.weights[id1]);
-    assert!((fit.weights[id2] - 0.4).abs() < 1e-2, "w2={}", fit.weights[id2]);
+    assert!(
+        (fit.weights[id1] - 0.6).abs() < 1e-2,
+        "w1={}",
+        fit.weights[id1]
+    );
+    assert!(
+        (fit.weights[id2] - 0.4).abs() < 1e-2,
+        "w2={}",
+        fit.weights[id2]
+    );
 }
 
 #[test]

@@ -118,7 +118,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: SdidConfig) -> ScFit {
     // --- Time weights λ: fit pre-period outcomes to post-avg, across controls. ---
     // design rows = control units, cols = pre periods => transpose of ctrl_pre.
     let design_time = ctrl_pre.transpose(); // J × T_pre
-    // target = each control's post-period average.
+                                            // target = each control's post-period average.
     let mut ctrl_post_avg = vec![0.0; j];
     for jc in 0..j {
         let mut s = 0.0;

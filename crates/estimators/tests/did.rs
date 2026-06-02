@@ -14,11 +14,7 @@ use panelkit_linalg::Mat;
 /// (per-cohort) effect that turns on at adoption. With heterogeneous effects
 /// across cohorts and staggered timing, TWFE's "forbidden comparisons" bias the
 /// estimate; C&S/SA do not.
-fn staggered_panel(
-    eff_early: f64,
-    eff_late: f64,
-    seed: u64,
-) -> (Panel, f64) {
+fn staggered_panel(eff_early: f64, eff_late: f64, seed: u64) -> (Panel, f64) {
     let mut rng = Xoshiro256pp::seed_from_u64(seed);
     let per_group = 25usize;
     let n = per_group * 3;

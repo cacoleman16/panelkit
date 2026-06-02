@@ -45,9 +45,7 @@ fn bench(c: &mut Criterion) {
     let panel = make_panel(n, t, t0);
 
     let mut g = c.benchmark_group("estimators_200x130");
-    g.bench_function("sc", |b| {
-        b.iter(|| fit_at(&panel, t0, ScConfig::default()))
-    });
+    g.bench_function("sc", |b| b.iter(|| fit_at(&panel, t0, ScConfig::default())));
     g.bench_function("asc", |b| {
         b.iter(|| fit_asc_at(&panel, t0, AscConfig::default()))
     });

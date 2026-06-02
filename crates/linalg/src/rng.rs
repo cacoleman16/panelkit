@@ -36,12 +36,7 @@ impl Xoshiro256pp {
     /// Seed from a single `u64` (expanded via SplitMix64).
     pub fn seed_from_u64(seed: u64) -> Self {
         let mut sm = SplitMix64::new(seed);
-        let s = [
-            sm.next_u64(),
-            sm.next_u64(),
-            sm.next_u64(),
-            sm.next_u64(),
-        ];
+        let s = [sm.next_u64(), sm.next_u64(), sm.next_u64(), sm.next_u64()];
         // Guard against the all-zero state.
         if s == [0, 0, 0, 0] {
             return Xoshiro256pp { s: [1, 2, 3, 4] };

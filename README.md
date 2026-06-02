@@ -44,12 +44,42 @@ Only `pypanelkit` touches Python; `linalg` depends on nothing but `std`.
 | `panelkit-inference` | resampling engines |
 | `pypanelkit` | the `panelkit._panelkit` extension module |
 
+## Quick start
+
+```python
+import numpy as np
+from panelkit import SyntheticControl, SyntheticDiD, CallawaySantAnna
+
+# Y is an N×T outcome array (rows = units, cols = periods).
+sc = SyntheticControl(inference="placebo").fit(Y, treated=[0], treat_time=104)
+print(sc.att, sc.p_value)
+
+sdid = SyntheticDiD().fit(Y, treated=[0], treat_time=104)        # robust default
+
+# Staggered DiD: per-unit first-treated period, -1/None = never treated.
+cs = CallawaySantAnna().fit(Y, treat_start=cohorts)
+print(cs.att, cs.event_time, cs.event_att)
+```
+
+## Performance
+
+From-scratch Rust + multithreaded inference, on a 200 × 130 panel
+(see [BENCHMARKS.md](BENCHMARKS.md)):
+
+| task | panelkit | NumPy + SciPy-SLSQP | speedup |
+|------|---------:|--------------------:|--------:|
+| single SC fit | 2.4 ms | 72 ms | ~30× |
+| full placebo (200 fits) | 0.058 s | 80.3 s | ~1380× |
+
+Identical estimates (ATT |Δ| ≈ 1e-11; same placebo p-value).
+
 ## Building from source
 
 ```bash
 # Rust toolchain (https://rustup.rs) + maturin required.
-maturin develop --manifest-path crates/pypanelkit/Cargo.toml   # dev build
-cargo test --workspace                                          # Rust tests
+maturin develop --release --manifest-path crates/pypanelkit/Cargo.toml  # build
+cargo test --workspace          # Rust tests (linalg cross-oracle, estimators)
+pytest python/tests             # Python-layer tests
 ```
 
 ## License

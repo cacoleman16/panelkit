@@ -109,8 +109,12 @@ impl Svd {
         let mut v_sorted = Mat::zeros(n, n);
         let mut s_sorted = vec![0.0; n];
         for (newj, &oldj) in order.iter().enumerate() {
-            u_sorted.col_mut(newj).copy_from_slice(&u.data[oldj * m..(oldj + 1) * m]);
-            v_sorted.col_mut(newj).copy_from_slice(&v.data[oldj * n..(oldj + 1) * n]);
+            u_sorted
+                .col_mut(newj)
+                .copy_from_slice(&u.data[oldj * m..(oldj + 1) * m]);
+            v_sorted
+                .col_mut(newj)
+                .copy_from_slice(&v.data[oldj * n..(oldj + 1) * n]);
             s_sorted[newj] = s[oldj];
         }
 
