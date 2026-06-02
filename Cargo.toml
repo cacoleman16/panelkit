@@ -31,6 +31,7 @@ numpy = "0.22"
 
 # Dev-only.
 proptest = "1"
+criterion = { version = "0.5", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -3,6 +3,8 @@
 //! Strategy: known-answer cases by hand, structural property checks on random
 //! matrices, and the SVD cross-oracle (one-sided Jacobi vs the Gram-eig path).
 
+#![allow(clippy::needless_range_loop)]
+
 use panelkit_linalg::factor::cholesky::Cholesky;
 use panelkit_linalg::factor::eig_sym::SymEig;
 use panelkit_linalg::factor::qr::Qr;

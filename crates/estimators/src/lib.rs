@@ -6,6 +6,11 @@
 //! do **not** run resampling themselves — that lives in `panelkit-inference`, so
 //! any fit composes with any valid inference engine.
 
+// Index-based loops over panel dimensions read more clearly than zipped
+// iterators in this numeric code; opt out of the lint crate-wide.
+#![allow(clippy::needless_range_loop)]
+
+pub mod mcnnm;
 pub mod panel;
 pub mod result;
 pub mod sc;

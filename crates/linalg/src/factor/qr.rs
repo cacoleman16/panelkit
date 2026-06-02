@@ -51,11 +51,10 @@ impl Qr {
             }
 
             // Store R[j,j] = alpha and the reflector tail below the diagonal.
+            let vlen = h.v.len();
             let col = &mut packed.data[j * m..(j + 1) * m];
             col[j] = h.alpha;
-            for k in 1..h.v.len() {
-                col[j + k] = h.v[k];
-            }
+            col[j + 1..j + vlen].copy_from_slice(&h.v[1..vlen]);
         }
 
         Ok(Qr {

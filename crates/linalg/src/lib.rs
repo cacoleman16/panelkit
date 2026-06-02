@@ -15,6 +15,11 @@
 //! - [`opt`]     — simplex-constrained solvers and the SVT prox operator.
 //! - [`rng`]     — deterministic, splittable PRNG.
 
+// In dense linear algebra, index-based loops over `0..n` that touch several
+// arrays at the same offset are clearer (and map more directly to the math)
+// than zipped iterators. We opt out of this lint crate-wide deliberately.
+#![allow(clippy::needless_range_loop)]
+
 pub mod error;
 pub mod factor;
 pub mod matrix;

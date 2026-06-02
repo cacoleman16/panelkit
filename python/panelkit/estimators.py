@@ -121,3 +121,73 @@ class SyntheticControl:
             self.level,
         )
         return _Result(raw)
+
+
+class AugmentedSC:
+    """Augmented Synthetic Control (Ben-Michael, Feller & Rothstein 2021).
+
+    Corrects residual pre-treatment imbalance with a ridge outcome model.
+    """
+
+    def __init__(self, sc_ridge: float = 0.0, aug_lambda: float | None = None):
+        self.sc_ridge = sc_ridge
+        self.aug_lambda = aug_lambda
+
+    def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
+        mat = _as_matrix(y)
+        raw = _panelkit.fit_asc(
+            mat, [int(t) for t in treated], int(treat_time), self.sc_ridge, self.aug_lambda
+        )
+        return _Result(raw)
+
+
+class SyntheticDiD:
+    """Synthetic Difference-in-Differences (Arkhangelsky et al. 2021).
+
+    The recommended general-purpose default: unit + time weights feeding a
+    doubly-weighted 2×2 difference-in-differences.
+    """
+
+    def __init__(self, zeta_scale: float = 1.0):
+        self.zeta_scale = zeta_scale
+
+    def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
+        mat = _as_matrix(y)
+        raw = _panelkit.fit_sdid(
+            mat, [int(t) for t in treated], int(treat_time), self.zeta_scale
+        )
+        return _Result(raw)
+
+
+class MCNNM:
+    """Matrix-Completion NNM (Athey et al. 2021).
+
+    Estimates a low-rank counterfactual by iterative singular-value
+    thresholding (SoftImpute). ``lambda_`` is chosen by cross-validation when
+    left as ``None``.
+    """
+
+    def __init__(
+        self,
+        lambda_: float | None = None,
+        max_iter: int = 200,
+        tol: float = 1e-5,
+        seed: int = 0,
+    ):
+        self.lambda_ = lambda_
+        self.max_iter = max_iter
+        self.tol = tol
+        self.seed = seed
+
+    def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
+        mat = _as_matrix(y)
+        raw = _panelkit.fit_mcnnm(
+            mat,
+            [int(t) for t in treated],
+            int(treat_time),
+            self.lambda_,
+            int(self.max_iter),
+            float(self.tol),
+            int(self.seed),
+        )
+        return _Result(raw)
