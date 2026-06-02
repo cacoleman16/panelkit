@@ -4,7 +4,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use panelkit_estimators::did::{fit_callaway, fit_sunab, fit_twfe};
+use panelkit_estimators::did::{bacon_decompose, fit_callaway, fit_sunab, fit_twfe, BaconKind};
 use panelkit_estimators::Panel;
 use panelkit_linalg::rng::Xoshiro256pp;
 use panelkit_linalg::Mat;
@@ -133,4 +133,40 @@ fn twfe_biased_but_cs_sa_correct_under_heterogeneity() {
         twfe_err > cs_err,
         "expected TWFE ({twfe}) more biased than C&S ({cs}); true={true_att}"
     );
+}
+
+#[test]
+fn bacon_decomposition_reproduces_twfe() {
+    // The decomposition's weighted average of 2x2 estimates must equal the TWFE
+    // coefficient — the strongest correctness check.
+    let (panel, _) = staggered_panel(1.0, 8.0, 4);
+    let twfe = fit_twfe(&panel).att;
+    let bacon = bacon_decompose(&panel);
+    assert!(
+        (bacon.twfe - twfe).abs() < 1e-9,
+        "Bacon Σwβ {} != TWFE {}",
+        bacon.twfe,
+        twfe
+    );
+    // Weights sum to 1.
+    let wsum: f64 = bacon.components.iter().map(|c| c.weight).sum();
+    assert!((wsum - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn bacon_flags_forbidden_comparison_weight() {
+    // With staggered timing and a never-treated group there are forbidden
+    // (later-vs-earlier) comparisons carrying positive weight — the source of
+    // TWFE's bias under heterogeneity.
+    let (panel, _) = staggered_panel(1.0, 8.0, 4);
+    let bacon = bacon_decompose(&panel);
+    assert!(
+        bacon.forbidden_weight > 0.0,
+        "expected positive forbidden-comparison weight"
+    );
+    // There is at least one forbidden component.
+    assert!(bacon
+        .components
+        .iter()
+        .any(|c| c.kind == BaconKind::LaterVsEarlierForbidden));
 }

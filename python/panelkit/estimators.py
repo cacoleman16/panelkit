@@ -271,3 +271,59 @@ class SunAbraham:
     def fit(self, y, treat_start: Sequence) -> _DiDResult:
         mat = _as_matrix(y)
         return _DiDResult(_panelkit.fit_sunab_py(mat, _cohorts(treat_start, mat.shape[0])))
+
+
+class _BaconResult:
+    """Goodman-Bacon decomposition result."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    @property
+    def twfe(self) -> float:
+        """Weighted average of all 2x2 estimates — equals the TWFE coefficient."""
+        return self._raw.twfe
+
+    @property
+    def forbidden_weight(self) -> float:
+        """Total weight on forbidden (later-vs-earlier) comparisons."""
+        return self._raw.forbidden_weight
+
+    @property
+    def components(self) -> list:
+        """List of 2x2 comparisons (each with .kind, .treated_cohort,
+        .comparison_cohort, .weight, .estimate)."""
+        return list(self._raw.components)
+
+    def summary(self) -> str:
+        lines = [
+            f"TWFE coefficient    : {self.twfe:.6g}",
+            f"forbidden weight    : {self.forbidden_weight:.4f}"
+            f"  (weight on already-treated-as-control comparisons)",
+            "components:",
+        ]
+        for c in self.components:
+            comp = "never" if c.comparison_cohort is None else f"g={c.comparison_cohort}"
+            lines.append(
+                f"  {c.kind:<28} g={c.treated_cohort} vs {comp:<7} "
+                f"w={c.weight:7.4f}  beta={c.estimate:8.4f}"
+            )
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return repr(self._raw)
+
+
+class GoodmanBacon:
+    """Goodman-Bacon (2021) decomposition of the TWFE DiD estimate into its
+    constituent 2x2 comparisons and weights.
+
+    A diagnostic, not an estimator: it shows how much of the TWFE coefficient
+    rests on "forbidden" comparisons that use already-treated units as controls
+    (the source of bias under heterogeneous effects). ``result.twfe`` reproduces
+    the TWFE coefficient exactly.
+    """
+
+    def fit(self, y, treat_start: Sequence) -> _BaconResult:
+        mat = _as_matrix(y)
+        return _BaconResult(_panelkit.bacon_decompose_py(mat, _cohorts(treat_start, mat.shape[0])))

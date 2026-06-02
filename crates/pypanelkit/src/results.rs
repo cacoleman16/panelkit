@@ -96,3 +96,57 @@ impl PyDidResult {
         )
     }
 }
+
+/// One 2×2 comparison in a Goodman-Bacon decomposition.
+#[pyclass(name = "BaconComponent")]
+#[derive(Clone)]
+pub struct PyBaconComponent {
+    /// "treated_vs_untreated", "earlier_vs_later", or "later_vs_earlier_forbidden".
+    #[pyo3(get)]
+    pub kind: String,
+    #[pyo3(get)]
+    pub treated_cohort: usize,
+    #[pyo3(get)]
+    pub comparison_cohort: Option<usize>,
+    #[pyo3(get)]
+    pub weight: f64,
+    #[pyo3(get)]
+    pub estimate: f64,
+}
+
+#[pymethods]
+impl PyBaconComponent {
+    fn __repr__(&self) -> String {
+        format!(
+            "BaconComponent(kind={}, treated={}, comparison={:?}, weight={:.4}, estimate={:.4})",
+            self.kind, self.treated_cohort, self.comparison_cohort, self.weight, self.estimate
+        )
+    }
+}
+
+/// Result of a Goodman-Bacon decomposition.
+#[pyclass(name = "BaconResult")]
+#[derive(Clone)]
+pub struct PyBaconResult {
+    /// Weighted-average estimate `Σ wᵢ βᵢ` — equals the TWFE coefficient.
+    #[pyo3(get)]
+    pub twfe: f64,
+    /// Total weight on forbidden (later-vs-earlier) comparisons.
+    #[pyo3(get)]
+    pub forbidden_weight: f64,
+    /// All 2×2 comparisons.
+    #[pyo3(get)]
+    pub components: Vec<PyBaconComponent>,
+}
+
+#[pymethods]
+impl PyBaconResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "BaconResult(twfe={:.6}, forbidden_weight={:.4}, n_components={})",
+            self.twfe,
+            self.forbidden_weight,
+            self.components.len()
+        )
+    }
+}

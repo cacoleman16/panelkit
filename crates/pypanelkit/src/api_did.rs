@@ -5,12 +5,12 @@
 //! never-treated unit.
 
 use numpy::PyReadonlyArray2;
-use panelkit_estimators::did::{fit_callaway, fit_sunab, fit_twfe};
+use panelkit_estimators::did::{bacon_decompose, fit_callaway, fit_sunab, fit_twfe, BaconKind};
 use panelkit_estimators::Panel;
 use pyo3::prelude::*;
 
 use crate::convert::mat_from_numpy;
-use crate::results::PyDidResult;
+use crate::results::{PyBaconComponent, PyBaconResult, PyDidResult};
 
 fn build_panel(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> Panel {
     let mat = mat_from_numpy(&y);
@@ -60,5 +60,32 @@ pub fn fit_sunab_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyD
         event_time: sa.event_study.iter().map(|e| e.key).collect(),
         event_att: sa.event_study.iter().map(|e| e.att).collect(),
         event_se: sa.event_study.iter().map(|e| e.se).collect(),
+    })
+}
+
+/// Goodman-Bacon decomposition of the TWFE estimate into 2×2 comparisons.
+#[pyfunction]
+pub fn bacon_decompose_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyBaconResult> {
+    let panel = build_panel(y, cohorts);
+    let b = bacon_decompose(&panel);
+    let components = b
+        .components
+        .iter()
+        .map(|c| PyBaconComponent {
+            kind: match c.kind {
+                BaconKind::TreatedVsUntreated => "treated_vs_untreated".to_string(),
+                BaconKind::EarlierVsLater => "earlier_vs_later".to_string(),
+                BaconKind::LaterVsEarlierForbidden => "later_vs_earlier_forbidden".to_string(),
+            },
+            treated_cohort: c.treated_cohort,
+            comparison_cohort: c.comparison_cohort,
+            weight: c.weight,
+            estimate: c.estimate,
+        })
+        .collect();
+    Ok(PyBaconResult {
+        twfe: b.twfe,
+        forbidden_weight: b.forbidden_weight,
+        components,
     })
 }

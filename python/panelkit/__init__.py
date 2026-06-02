@@ -8,6 +8,7 @@ from ._panelkit import version as _version
 from .estimators import (
     AugmentedSC,
     CallawaySantAnna,
+    GoodmanBacon,
     MCNNM,
     SunAbraham,
     SyntheticControl,
@@ -24,6 +25,7 @@ __all__ = [
     "TWFE",
     "CallawaySantAnna",
     "SunAbraham",
+    "GoodmanBacon",
 ]
 
 __version__ = _version()

@@ -2,8 +2,9 @@
 heterogeneous adoption."""
 
 import numpy as np
+import pytest
 
-from panelkit import TWFE, CallawaySantAnna, SunAbraham
+from panelkit import TWFE, CallawaySantAnna, GoodmanBacon, SunAbraham
 
 
 def staggered(eff_early, eff_late, seed=0):
@@ -56,3 +57,19 @@ def test_none_means_never_treated():
     ts2 = [None if c < 0 else c for c in ts]
     res = CallawaySantAnna().fit(Y, ts2)
     assert abs(res.att - true_att) < 0.4
+
+
+def test_bacon_reproduces_twfe():
+    Y, ts, _ = staggered(1.0, 8.0, seed=5)
+    twfe = TWFE().fit(Y, ts).att
+    bacon = GoodmanBacon().fit(Y, ts)
+    assert abs(bacon.twfe - twfe) < 1e-9
+    assert sum(c.weight for c in bacon.components) == pytest.approx(1.0)
+
+
+def test_bacon_has_forbidden_weight():
+    Y, ts, _ = staggered(1.0, 8.0, seed=6)
+    bacon = GoodmanBacon().fit(Y, ts)
+    assert bacon.forbidden_weight > 0.0
+    kinds = {c.kind for c in bacon.components}
+    assert "later_vs_earlier_forbidden" in kinds
