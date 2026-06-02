@@ -5,8 +5,8 @@
 //! implement correctly, and it computes small singular values to high *relative*
 //! accuracy (Demmel–Veselić) — exactly what the MC-NNM soft-thresholding path
 //! needs, where the spectrum near the threshold determines the answer. At
-//! panelkit's sizes the extra flops are irrelevant. A Golub–Kahan path is kept
-//! in [`crate::factor::bidiag`] purely as an independent test oracle.
+//! panelkit's sizes the extra flops are irrelevant. An independent Gram-based
+//! SVD ([`crate::factor::svd_gram`]) is kept purely as a test cross-oracle.
 //!
 //! The method orthogonalizes the columns of (a copy of) `A` by a sequence of
 //! plane rotations chosen to annihilate column-pair inner products; the column
