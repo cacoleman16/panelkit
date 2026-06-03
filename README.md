@@ -9,7 +9,7 @@ the whole stack is self-contained, deterministic, and fast. The numerical core
 (`panelkit-linalg`) is a standalone crate intended to also back sibling projects
 (e.g. a future time-series library).
 
-- **Fast:** ~30× a NumPy+SciPy synthetic control on a single fit, ~1380× on a
+- **Fast:** ~45–70× a NumPy+SciPy synthetic control on a single fit, ~1400× on a
   full placebo test (multithreaded). [Details.](BENCHMARKS.md)
 - **Self-contained:** the numerical core is hand-written — matmul, Cholesky, QR,
   a one-sided Jacobi SVD, simplex solvers, and a PRNG, with zero numeric deps.
@@ -148,15 +148,30 @@ of `RAYON_NUM_THREADS`, because replicate `b` always draws from
 
 ## Performance
 
-From-scratch Rust + multithreaded inference, on a 200 × 130 panel
-(see [BENCHMARKS.md](BENCHMARKS.md)):
+From-scratch Rust + multithreaded inference vs the textbook NumPy + SciPy-SLSQP
+synthetic control. Numbers below are **measured live** by
+[`benchmarks/make_plots.py`](benchmarks/make_plots.py) (median over 5 panels per
+size, Apple M4 Pro; absolute times vary by hardware — re-run to regenerate).
 
-| task | panelkit | NumPy + SciPy-SLSQP | speedup |
+A single synthetic-control fit, across donor-pool sizes (log scale):
+
+![SC fit time vs panel size](assets/bench_scaling.png)
+
+The per-fit win compounds under inference — a full in-space placebo test runs one
+fit per donor (here 200), multithreaded:
+
+![panelkit vs reference wall-clock](assets/bench_speedup.png)
+
+| task (200 × 130 panel) | panelkit | NumPy + SciPy-SLSQP | speedup |
 |------|---------:|--------------------:|--------:|
-| single SC fit | 2.4 ms | 72 ms | ~30× |
-| full placebo (200 fits) | 0.058 s | 80.3 s | ~1380× |
+| single SC fit | ~2.0 ms | ~120 ms | ~60× |
+| full placebo (200 fits) | ~0.056 s | ~82 s | ~1467× |
 
-Identical estimates (ATT |Δ| ≈ 1e-11; same placebo p-value).
+Estimates are identical (ATT |Δ| ≈ 1e-11; same placebo p-value) — this is pure
+implementation speed, not an approximation. panelkit is also far steadier: SciPy
+SLSQP has occasional convergence cliffs on near-collinear donor panels (one took
+9.5 s in testing), which is why the table reports the median typical case. See
+[BENCHMARKS.md](BENCHMARKS.md).
 
 ## Architecture
 

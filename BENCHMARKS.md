@@ -1,13 +1,14 @@
 # Benchmarks
 
-All numbers on an Apple-silicon laptop, release build (`maturin develop
---release`), panel size **200 units × 130 periods (104 pre / 26 post)** — the
-scale of a realistic geo experiment.
+Measured on an **Apple M4 Pro (14 cores)**, release build, panel size
+**200 units × 130 periods (104 pre / 26 post)** — the scale of a realistic geo
+experiment. Absolute times vary by hardware; re-run to regenerate.
 
-Reproduce with:
+Reproduce (regenerates the figures + `assets/bench_results.txt`):
 
 ```bash
 maturin develop --release --manifest-path crates/pypanelkit/Cargo.toml
+python benchmarks/make_plots.py      # the figures used in the README
 python benchmarks/bench_sc.py        # single SC fit vs NumPy+SLSQP
 python benchmarks/bench_placebo.py   # full placebo inference vs NumPy+SLSQP
 cargo bench -p panelkit-estimators   # Rust-side criterion micro-benchmarks
@@ -17,14 +18,23 @@ cargo bench -p panelkit-estimators   # Rust-side criterion micro-benchmarks
 
 The reference is the textbook implementation: simplex-constrained least squares
 solved with `scipy.optimize` SLSQP. panelkit uses its from-scratch away-step
-Frank–Wolfe solver in Rust.
+Frank–Wolfe solver in Rust. Median over 5 panels per size:
 
-| method                    |     ATT |  ms / fit |
-|---------------------------|--------:|----------:|
-| panelkit (Rust FW)        | 0.05000 |     2.41  |
-| reference (NumPy + SLSQP) | 0.05000 |    72.28  |
+| N units |  panelkit (ms) | reference (ms) | speedup |
+|--------:|---------------:|---------------:|--------:|
+|      20 |          0.032 |          1.43  |   ~45×  |
+|      50 |          0.089 |          5.43  |   ~61×  |
+|     100 |          0.371 |         23.99  |   ~65×  |
+|     150 |          0.945 |         68.95  |   ~73×  |
+|     200 |          2.040 |        121.40  |   ~60×  |
 
-**≈ 30× faster**, with identical ATT (|Δ| = 3.6e-11).
+Estimates are identical (ATT |Δ| ≈ 1e-11). See `assets/bench_scaling.png`.
+
+> **Robustness note.** SciPy SLSQP has occasional convergence cliffs on
+> near-collinear donor panels — in this sweep individual panels ranged from tens
+> of ms up to **9.5 s** at N=200 when SLSQP iterated to its cap. The table
+> reports the **median** (typical case); the *mean* reference time is far worse.
+> panelkit's Frank–Wolfe solver has no such cliffs.
 
 ## Full placebo inference (1 + 199 leave-one-out fits)
 
@@ -33,10 +43,10 @@ in. Both compute the same in-space placebo p-value.
 
 | method                       | p-value | seconds |
 |------------------------------|--------:|--------:|
-| panelkit (Rust, parallel)    |  0.0050 |   0.058 |
-| reference (NumPy + SLSQP)    |  0.0050 |  80.29  |
+| panelkit (Rust, parallel)    |  0.0050 |   0.056 |
+| reference (NumPy + SLSQP)    |  0.0050 |  82.2   |
 
-**≈ 1380× faster**, identical p-value.
+**≈ 1467× faster**, identical p-value. See `assets/bench_speedup.png`.
 
 ## Rust-side estimator micro-benchmarks (criterion)
 
