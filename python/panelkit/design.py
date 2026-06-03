@@ -774,12 +774,13 @@ class GeoDesign:
         if unknown:
             raise ValueError(f"unknown methods {unknown}; choose from {_METHODS}")
 
-        def _fit(method, tr):
+        def _fit(method, tr, Y=None):
+            Y = self.Y if Y is None else Y
             if method == "SC":
-                return _panelkit.fit_sc(self.Y, tr, t0, 0.0, False, level)
+                return _panelkit.fit_sc(Y, tr, t0, 0.0, False, level)
             if method == "ASC":
-                return _panelkit.fit_asc(self.Y, tr, t0, 0.0, None)
-            return _panelkit.fit_sdid(self.Y, tr, t0, 1.0)
+                return _panelkit.fit_asc(Y, tr, t0, 0.0, None)
+            return _panelkit.fit_sdid(Y, tr, t0, 1.0)
 
         treated_series = self.Y[idx].mean(axis=0)
         post_len = self.t - t0
@@ -826,17 +827,25 @@ class GeoDesign:
 
         # --- engine: per-method null att-samples (+ donor placebo paths if used) ---
         if inference == "placebo":
+            # Refit each donor as if treated, on the donor-ONLY sub-panel so the
+            # real treated unit(s) are excluded from every placebo's control pool
+            # (textbook Abadie — no leakage of the actual effect into the null).
             treated_set = set(idx)
-            donors = [u for u in range(self.n) if u not in treated_set]
-            if len(donors) > int(max_placebo):
+            all_donors = [u for u in range(self.n) if u not in treated_set]
+            ydon = self.Y[all_donors]                    # rows = donors only
+            nd = len(all_donors)
+            rows = list(range(nd))
+            if nd > int(max_placebo):
                 rng = np.random.default_rng(int(seed))
-                donors = sorted(int(j) for j in
-                                rng.choice(donors, int(max_placebo), replace=False))
+                rows = sorted(int(r) for r in rng.choice(nd, int(max_placebo), replace=False))
             pb = {m: [] for m in methods}    # per method: list of (att_path, pre_rmspe)
-            for j in donors:
-                for m in methods:
-                    fj = _fit(m, [j])
-                    pb[m].append((np.asarray(fj.att_path, dtype=float), float(fj.pre_rmspe)))
+            # Need >= 2 donors so a placebo (1 treated + >= 1 control) is fittable;
+            # otherwise leave pb empty → inference is reported undefined/low-power.
+            if nd >= 2:
+                for r in rows:
+                    for m in methods:
+                        fj = _fit(m, [r], ydon)
+                        pb[m].append((np.asarray(fj.att_path, dtype=float), float(fj.pre_rmspe)))
 
             def _kept_att(samples, treated_pre_m):
                 keep = [p.mean() for (p, pre) in samples
@@ -895,7 +904,7 @@ class GeoDesign:
         if inference == "placebo":
             treated_pre = sum(wmap[m] * per[m]["pre_rmspe"] for m in order)
             ens_pb = []
-            for di in range(len(donors)):
+            for di in range(len(pb[order[0]])):
                 path = sum(wmap[m] * pb[m][di][0] for m in order)
                 pre = sum(wmap[m] * pb[m][di][1] for m in order)
                 ens_pb.append((path, pre))
