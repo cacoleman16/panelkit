@@ -26,8 +26,9 @@ panelkit-inference = { path = "crates/inference" }
 rayon = "1.10"
 
 # Python binding deps — confined to the pypanelkit crate only.
-pyo3 = { version = "0.22", default-features = false }
-numpy = "0.22"
+# pyo3 >= 0.24.1 fixes RUSTSEC-2025-0020; numpy 0.25 pairs with pyo3 0.25.
+pyo3 = { version = "0.25", default-features = false }
+numpy = "0.25"
 
 # Dev-only.
 proptest = "1"

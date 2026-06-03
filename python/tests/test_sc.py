@@ -70,3 +70,22 @@ def test_bootstrap_deterministic_across_calls():
 def test_bad_shape_raises():
     with pytest.raises(ValueError):
         SyntheticControl().fit(np.zeros(5), treated=[0], treat_time=2)
+
+
+def test_input_validation_raises_cleanly():
+    y, t0 = planted_panel(2.0)
+    n = y.shape[0]
+    # out-of-range treated index
+    with pytest.raises(ValueError):
+        SyntheticControl().fit(y, treated=[n + 5], treat_time=t0)
+    # treat_time out of range
+    with pytest.raises(ValueError):
+        SyntheticControl().fit(y, treated=[0], treat_time=y.shape[1])
+    # empty treated
+    with pytest.raises(ValueError):
+        SyntheticControl().fit(y, treated=[], treat_time=t0)
+    # NaN in panel
+    bad = y.copy()
+    bad[1, 1] = np.nan
+    with pytest.raises(ValueError):
+        SyntheticControl().fit(bad, treated=[0], treat_time=t0)

@@ -252,5 +252,5 @@ pub fn fit_many<'py>(
         })
         .map_err(PyValueError::new_err)?;
 
-    Ok(PyArray1::from_vec_bound(py, atts))
+    Ok(PyArray1::from_vec(py, atts))
 }

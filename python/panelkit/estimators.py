@@ -122,7 +122,26 @@ def _as_matrix(y) -> np.ndarray:
     arr = np.ascontiguousarray(np.asarray(y, dtype=np.float64))
     if arr.ndim != 2:
         raise ValueError(f"y must be 2-D (N units × T periods), got shape {arr.shape}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("y contains NaN or inf; panelkit requires a complete, finite panel")
     return arr
+
+
+def _validate_block(mat: np.ndarray, treated, treat_time: int) -> None:
+    """Validate block-treatment args against the panel shape, raising ValueError
+    (rather than letting the Rust core panic) on bad input."""
+    n, t = mat.shape
+    if not treated:
+        raise ValueError("`treated` must list at least one treated unit index")
+    for u in treated:
+        if not (0 <= int(u) < n):
+            raise ValueError(f"treated unit index {u} out of range [0, {n})")
+    if not (1 <= int(treat_time) < t):
+        raise ValueError(
+            f"treat_time {treat_time} must be in [1, {t}) so there is ≥1 pre and ≥1 post period"
+        )
+    if len(treated) >= n:
+        raise ValueError("need at least one never-treated unit as a donor/control")
 
 
 class SyntheticControl:
@@ -161,6 +180,7 @@ class SyntheticControl:
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
         treated = [int(t) for t in treated]
+        _validate_block(mat, treated, treat_time)
         do_placebo = self.inference == "placebo"
         raw = _panelkit.fit_sc(
             mat,
@@ -178,6 +198,7 @@ class SyntheticControl:
         """Fit across a stack of panels in parallel (for Monte-Carlo / power /
         robustness runs). ``panels`` is ``(R, N, T)``; returns ``R`` ATTs."""
         stack = _as_stack(panels)
+        _validate_block(np.zeros(stack.shape[1:]), [int(t) for t in treated], treat_time)
         return np.asarray(
             _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
                                "sc", self.ridge, 1.0),
@@ -211,8 +232,10 @@ class AugmentedSC:
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
+        treated = [int(t) for t in treated]
+        _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_asc(
-            mat, [int(t) for t in treated], int(treat_time), self.sc_ridge, self.aug_lambda
+            mat, treated, int(treat_time), self.sc_ridge, self.aug_lambda
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
@@ -221,6 +244,7 @@ class AugmentedSC:
     def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
         """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
         stack = _as_stack(panels)
+        _validate_block(np.zeros(stack.shape[1:]), [int(t) for t in treated], treat_time)
         return np.asarray(
             _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
                                "asc", self.sc_ridge, 1.0),
@@ -254,8 +278,10 @@ class SyntheticDiD:
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
+        treated = [int(t) for t in treated]
+        _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_sdid(
-            mat, [int(t) for t in treated], int(treat_time), self.zeta_scale
+            mat, treated, int(treat_time), self.zeta_scale
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
@@ -264,6 +290,7 @@ class SyntheticDiD:
     def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
         """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
         stack = _as_stack(panels)
+        _validate_block(np.zeros(stack.shape[1:]), [int(t) for t in treated], treat_time)
         return np.asarray(
             _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
                                "sdid", 0.0, self.zeta_scale),
@@ -293,9 +320,11 @@ class MCNNM:
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
+        treated = [int(t) for t in treated]
+        _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_mcnnm(
             mat,
-            [int(t) for t in treated],
+            treated,
             int(treat_time),
             self.lambda_,
             int(self.max_iter),
@@ -385,9 +414,11 @@ class CPASC:
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _CPASCResult:
         mat = _as_matrix(y)
+        treated = [int(t) for t in treated]
+        _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_cpasc(
             mat,
-            [int(t) for t in treated],
+            treated,
             int(treat_time),
             self.mode,
             int(self.n_strata),

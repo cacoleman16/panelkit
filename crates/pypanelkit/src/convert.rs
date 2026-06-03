@@ -30,7 +30,7 @@ pub fn mat_to_numpy<'py>(py: Python<'py>, m: &Mat) -> Bound<'py, PyArray2<f64>> 
     let row_major = m.to_row_major();
     // Build an ndarray view then convert; shape is (rows, cols), C-order.
     let arr = ndarray_from_row_major(rows, cols, row_major);
-    arr.to_pyarray_bound(py)
+    arr.to_pyarray(py)
 }
 
 #[allow(dead_code)]
