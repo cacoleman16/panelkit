@@ -1,0 +1,19 @@
+[package]
+name = "panelkit-geolift"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Geo test-market selection, power analysis, and MDE for panelkit (SC/ASC/SDID), real-world focused."
+
+[features]
+default = []
+parallel = ["dep:rayon", "panelkit-inference/parallel", "panelkit-linalg/parallel"]
+
+[dependencies]
+panelkit-linalg = { workspace = true }
+panelkit-estimators = { workspace = true }
+panelkit-inference = { workspace = true }
+rayon = { workspace = true, optional = true }

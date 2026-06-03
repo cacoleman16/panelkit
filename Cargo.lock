@@ -462,7 +462,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "panelkit-estimators"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "panelkit-linalg",
@@ -470,8 +470,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "panelkit-geo"
+version = "0.2.0"
+dependencies = [
+ "panelkit-estimators",
+ "panelkit-inference",
+ "panelkit-linalg",
+ "proptest",
+ "rayon",
+]
+
+[[package]]
 name = "panelkit-inference"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "panelkit-estimators",
  "panelkit-linalg",
@@ -480,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "panelkit-linalg"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "rayon",
@@ -612,10 +623,11 @@ dependencies = [
 
 [[package]]
 name = "pypanelkit"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "numpy",
  "panelkit-estimators",
+ "panelkit-geo",
  "panelkit-inference",
  "panelkit-linalg",
  "pyo3",

@@ -114,6 +114,68 @@ def fit_many(
     zeta_scale: float = ...,
 ) -> npt.NDArray[np.float64]: ...
 def fit_twfe_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> DiDResult: ...
+class PowerResult:
+    method: str
+    lifts: list[float]
+    power: list[float]
+    est_mean: list[float]
+    est_lo: list[float]
+    est_hi: list[float]
+    mde_pct: Optional[float]
+    mde_abs_per_period: Optional[float]
+    mde_cumulative: Optional[float]
+    crit: float
+    se_null: float
+    n_windows: int
+    def __repr__(self) -> str: ...
+
+class GeoDiagnostics:
+    holdout_pct: float
+    pre_fit_rel: float
+    improvement_vs_naive: float
+    seasonality_strength: float
+    stability_score: float
+    confidence: float
+    warnings: list[str]
+    def __repr__(self) -> str: ...
+
+class MarketCandidate:
+    treated: list[int]
+    power_at_target: float
+    mde_pct: Optional[float]
+    holdout_pct: float
+    pre_fit_rel: float
+    stability_score: float
+    confidence: float
+    score: float
+    def __repr__(self) -> str: ...
+
+def geo_power(
+    y: npt.NDArray[np.float64],
+    treated: Sequence[int],
+    test_len: int,
+    lifts: Sequence[float],
+    method: str = ...,
+    alpha: float = ...,
+    target_power: float = ...,
+    min_pre: int = ...,
+) -> PowerResult: ...
+def geo_diagnostics(
+    y: npt.NDArray[np.float64], treated: Sequence[int], test_len: int
+) -> GeoDiagnostics: ...
+def geo_select(
+    y: npt.NDArray[np.float64],
+    eligible: Sequence[int],
+    max_treated: int,
+    test_len: int,
+    target_lift: float,
+    method: str = ...,
+    alpha: float = ...,
+    target_power: float = ...,
+    min_pre: int = ...,
+    n_candidates: int = ...,
+    seed: int = ...,
+) -> list[MarketCandidate]: ...
 def fit_callaway_py(
     y: npt.NDArray[np.float64], cohorts: Sequence[int], control: str = ...
 ) -> DiDResult: ...

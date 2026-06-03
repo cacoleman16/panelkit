@@ -4,11 +4,12 @@ members = [
     "crates/linalg",
     "crates/estimators",
     "crates/inference",
+    "crates/geo",
     "crates/pypanelkit",
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.74"
 license = "MIT OR Apache-2.0"
@@ -20,6 +21,7 @@ repository = "https://github.com/cacoleman16/panelkit"
 panelkit-linalg = { path = "crates/linalg" }
 panelkit-estimators = { path = "crates/estimators" }
 panelkit-inference = { path = "crates/inference" }
+panelkit-geo = { path = "crates/geo" }
 
 # The numerical core has NO external numeric deps. rayon is optional and lives
 # behind a feature flag so the reusable core stays dependency-free by default.

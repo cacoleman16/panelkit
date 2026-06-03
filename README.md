@@ -170,6 +170,47 @@ Runnable scripts live in [`examples/`](examples/): `sc_demo.py`, `did_demo.py`,
 `cpasc_demo.py`. See [GUIDE.md](GUIDE.md) for the estimand, assumptions, and
 valid inference for each estimator.
 
+## Geo test design (power analysis & market selection)
+
+`panelkit.design` is the planning layer in front of a geo experiment — a
+GeoLift-style toolkit, but multi-method and robustness-first, with the heavy
+simulation in Rust. It answers: **which markets should I treat, how big a lift
+can I detect, and can I trust this design?**
+
+```python
+from panelkit.design import GeoDesign
+
+# from a long/tidy DataFrame (location, date, outcome) — or GeoDesign(Y, names=…)
+design = GeoDesign.from_long(df, location="dma", time="week", outcome="sales")
+
+rep = design.power(treated=["chicago", "denver"], test_len=8)
+print(rep.summary())          # plain-English report: MDE, confidence, warnings
+rep.plot("design.png")        # the figure below
+
+# or let it pick the markets for you:
+ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3)
+```
+
+![geo design report](assets/geo_design.png)
+
+What it does that GeoLift doesn't, out of the box:
+
+- **Real-data power** — historical placebo with injected lift on your *actual*
+  panel (not an assumed variance), across **SC, ASC, and SDID** with a
+  recommended method, plus a naive-DiD baseline for improvement-over-naive.
+- **MDE three ways** — minimum detectable effect as a **% lift**, an **absolute**
+  per-period change, and the **cumulative** incremental over the whole window,
+  each with confidence intervals.
+- **Real-world guardrails** — seasonality detection, a pre-period **stability**
+  score, **holdout** share, and plain-language **warnings** when the design is
+  risky (weak fit, too few donors, short history, volatile markets).
+- **A 0–100 confidence score** and a one-line verdict, so non-experts get a clear
+  go/no-go.
+- **Market selection** that searches candidate treatment sets and ranks them by
+  power, MDE, fit, holdout, and confidence.
+
+See [`examples/geo_demo.py`](examples/geo_demo.py).
+
 ## Inference
 
 | engine | use | determinism |

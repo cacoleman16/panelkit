@@ -27,5 +27,6 @@ panelkit-linalg = { workspace = true }
 panelkit-estimators = { workspace = true }
 # Multithreaded inference baked into the wheel (rayon, deterministic substreams).
 panelkit-inference = { workspace = true, features = ["parallel"] }
+panelkit-geo = { workspace = true, features = ["parallel"] }
 pyo3 = { workspace = true, features = ["abi3-py39"] }
 numpy = { workspace = true }

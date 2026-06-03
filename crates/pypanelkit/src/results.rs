@@ -139,6 +139,113 @@ impl PyCpascResult {
     }
 }
 
+/// Power-analysis result for one estimator (flattened for easy plotting).
+#[pyclass(name = "PowerResult")]
+#[derive(Clone)]
+pub struct PyPowerResult {
+    #[pyo3(get)]
+    pub method: String,
+    /// True injected lifts (x-axis), as fractions.
+    #[pyo3(get)]
+    pub lifts: Vec<f64>,
+    /// Detection rate at each lift.
+    #[pyo3(get)]
+    pub power: Vec<f64>,
+    /// Mean estimated lift (%) at each true lift.
+    #[pyo3(get)]
+    pub est_mean: Vec<f64>,
+    #[pyo3(get)]
+    pub est_lo: Vec<f64>,
+    #[pyo3(get)]
+    pub est_hi: Vec<f64>,
+    #[pyo3(get)]
+    pub mde_pct: Option<f64>,
+    #[pyo3(get)]
+    pub mde_abs_per_period: Option<f64>,
+    #[pyo3(get)]
+    pub mde_cumulative: Option<f64>,
+    #[pyo3(get)]
+    pub crit: f64,
+    #[pyo3(get)]
+    pub se_null: f64,
+    #[pyo3(get)]
+    pub n_windows: usize,
+}
+
+#[pymethods]
+impl PyPowerResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "PowerResult(method={}, mde_pct={:?}, n_windows={})",
+            self.method, self.mde_pct, self.n_windows
+        )
+    }
+}
+
+/// Design diagnostics, exposed to Python.
+#[pyclass(name = "GeoDiagnostics")]
+#[derive(Clone)]
+pub struct PyGeoDiagnostics {
+    #[pyo3(get)]
+    pub holdout_pct: f64,
+    #[pyo3(get)]
+    pub pre_fit_rel: f64,
+    #[pyo3(get)]
+    pub improvement_vs_naive: f64,
+    #[pyo3(get)]
+    pub seasonality_strength: f64,
+    #[pyo3(get)]
+    pub stability_score: f64,
+    #[pyo3(get)]
+    pub confidence: f64,
+    #[pyo3(get)]
+    pub warnings: Vec<String>,
+}
+
+#[pymethods]
+impl PyGeoDiagnostics {
+    fn __repr__(&self) -> String {
+        format!(
+            "GeoDiagnostics(confidence={:.0}, holdout={:.1}%, n_warnings={})",
+            self.confidence,
+            100.0 * self.holdout_pct,
+            self.warnings.len()
+        )
+    }
+}
+
+/// One ranked candidate treatment-market set.
+#[pyclass(name = "MarketCandidate")]
+#[derive(Clone)]
+pub struct PyMarketCandidate {
+    #[pyo3(get)]
+    pub treated: Vec<usize>,
+    #[pyo3(get)]
+    pub power_at_target: f64,
+    #[pyo3(get)]
+    pub mde_pct: Option<f64>,
+    #[pyo3(get)]
+    pub holdout_pct: f64,
+    #[pyo3(get)]
+    pub pre_fit_rel: f64,
+    #[pyo3(get)]
+    pub stability_score: f64,
+    #[pyo3(get)]
+    pub confidence: f64,
+    #[pyo3(get)]
+    pub score: f64,
+}
+
+#[pymethods]
+impl PyMarketCandidate {
+    fn __repr__(&self) -> String {
+        format!(
+            "MarketCandidate(treated={:?}, power={:.2}, confidence={:.0}, score={:.3})",
+            self.treated, self.power_at_target, self.confidence, self.score
+        )
+    }
+}
+
 /// One 2×2 comparison in a Goodman-Bacon decomposition.
 #[pyclass(name = "BaconComponent")]
 #[derive(Clone)]
