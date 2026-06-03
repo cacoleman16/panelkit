@@ -251,16 +251,58 @@ SC / ASC / SDID. Returns a report with:
   estimate-accuracy CI, design-quality bars).
 
 Key options: `alpha` (significance level, default 0.10), `target_power`
-(default 0.80), `lifts` (the % grid), `methods`, `recommended` (default SDID).
+(default 0.80), `lifts` (the % grid), `methods`, `recommended` (default SDID),
+`lookback`.
+
+**How power is simulated (many placebos, not one).** For a treated set, the test
+window of length `test_len` is *slid across the whole history*: every valid start
+position is one placebo experiment. The detection threshold (critical |ATT|)
+comes from those same windows with **no** injected lift (the historical null), and
+power at lift τ is the share of windows whose injected effect clears that
+threshold. So the estimate is averaged over **many** placebos — `result.n_windows`
+reports how many.
+
+**Relationship to GeoLift's `lookback_window`.** GeoLift's lookback is exactly
+this idea — how many recent test-start points to simulate over. By default
+panelkit uses *all* available windows (more placebo samples → a more stable power
+estimate). Pass `lookback=k` to use only the **most-recent k** windows: those have
+the longest pre-periods and reflect current dynamics, so they're the most
+representative of the test you're about to run — at the cost of fewer samples (a
+noisier estimate). It matters when older history is unrepresentative (regime
+change, growth, format changes) or when early windows have very short pre-periods;
+use a `lookback` covering your relevant recent history (e.g. the last ~6–12
+months of windows).
 
 ### Choosing a specification — `design.recommend(test_lengths, n_geos_options, target_lift, alphas=…)`
 
 Sweeps designs across **test length × number of geos × alpha** and recommends the
 best (smallest MDE among trustworthy designs, ties broken toward shorter/cheaper).
 `grid.summary()` prints the recommendation + alternatives; `grid.plot(path)`
-renders the **tradeoffs figure** (MDE vs length per #geos, an MDE heatmap over
-length × #geos, and alpha sensitivity). Use it to find the "knee" — the cheapest
-design that still detects your target lift.
+renders the **tradeoffs figure**. Use it to find the "knee" — the cheapest design
+that still detects your target lift.
+
+**Reading the tradeoffs figure:**
+- **Top panel** — minimum detectable lift (%) vs test length, one line per number
+  of treated geos. *Lower is better.* The red band marks lifts you *can't*
+  detect; lines below your target lift are viable designs. More geos and longer
+  tests pull the line down (more signal), but cost more holdout/time — pick the
+  knee where the curve flattens.
+- **Bottom-left heatmap** — the same MDE across every (test length × #geos) cell,
+  green = small detectable lift (good), red = large (bad), grey = underpowered.
+- **Bottom-right** — with multiple alphas, how the MDE of the recommended design
+  moves with the significance level (looser α → smaller MDE, more false
+  positives); with one alpha, design confidence by spec.
+- The black ★ marks the recommended design.
+
+### Guardrails — `design.diagnose(treated, test_len)`
+
+Before trusting a design, check it. `diagnose` returns a report with
+`.summary()` and `.plot(path)` (the **guardrails figure**): the pre-period fit
+(treated vs synthetic control, so you can *see* whether the counterfactual
+tracks), a seasonality ACF, the holdout share against a healthy band, and a
+banner listing any plain-language warnings (weak fit, volatile markets, strong
+seasonality vs short history, tiny/huge holdout, too few donors). It also exposes
+`.confidence`, `.holdout_pct`, and `.warnings`.
 
 ### Picking markets — `design.select_markets(test_len, target_lift, max_treated, …)`
 

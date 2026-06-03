@@ -187,11 +187,16 @@ rep = design.power(treated=["chicago", "denver"], test_len=8, alpha=0.10)
 print(rep.summary())          # plain-English report: MDE, confidence, warnings
 rep.plot("design.png")        # the figure below
 
+# guardrails: is this design trustworthy? (pre-fit, seasonality, holdout, warnings)
+guard = design.diagnose(treated=["chicago", "denver"], test_len=8)
+print(guard.summary())
+guard.plot("guardrails.png")  # the guardrails figure below
+
 # let it pick the markets for you:
 ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3)
 
 # or sweep specifications (length × #geos × significance) and recommend one:
-grid = design.recommend(test_lengths=[4, 6, 8, 12], n_geos_options=[1, 2, 3, 4],
+grid = design.recommend(test_lengths=[4, 6, 8, 12], n_geos_options=[3, 5, 10, 20],
                         target_lift=0.05, alphas=[0.05, 0.10])
 print(grid.summary())
 grid.plot("tradeoffs.png")    # the tradeoffs figure below
@@ -199,9 +204,16 @@ grid.plot("tradeoffs.png")    # the tradeoffs figure below
 
 ![geo design report](assets/geo_design.png)
 
+**Guardrails — can you trust the design?** `diagnose(...)` visualizes the
+pre-period fit (treated vs synthetic control), seasonality, holdout share, and
+surfaces plain-language warnings when the design is risky:
+
+![guardrails](assets/geo_guardrails.png)
+
 **Recommendations across specifications.** `recommend(...)` sweeps test length ×
 number of geos × significance level (`alpha`) and points you at the cheapest
-design that still detects your target lift — with a figure of the tradeoffs:
+design that still detects your target lift — with a readable figure of the
+tradeoffs (MDE vs length per #geos, an intuitive heatmap, and alpha sensitivity):
 
 ![specification tradeoffs](assets/geo_scenarios.png)
 

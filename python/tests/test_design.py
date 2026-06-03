@@ -35,6 +35,15 @@ def test_power_report_basics():
     assert 0 <= rep.confidence <= 100
 
 
+def test_lookback_limits_windows():
+    Y, names = geo_panel()
+    d = GeoDesign(Y, names=names)
+    full = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05])
+    recent = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05], lookback=8)
+    assert recent.best.n_windows == 8
+    assert full.best.n_windows > recent.best.n_windows
+
+
 def test_treated_by_name_or_index_equivalent():
     Y, names = geo_panel()
     d = GeoDesign(Y, names=names)
@@ -49,6 +58,19 @@ def test_plot_writes_file(tmp_path):
     rep = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05, 0.1])
     out = tmp_path / "p.png"
     rep.plot(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_diagnose_report_and_plot(tmp_path):
+    Y, names = geo_panel()
+    d = GeoDesign(Y, names=names)
+    guard = d.diagnose(treated=["M00"], test_len=10)
+    s = guard.summary()
+    assert "GUARDRAILS" in s
+    assert 0 <= guard.confidence <= 100
+    assert 0 < guard.holdout_pct < 1
+    out = tmp_path / "g.png"
+    guard.plot(str(out))
     assert out.exists() and out.stat().st_size > 0
 
 

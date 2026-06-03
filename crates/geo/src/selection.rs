@@ -46,6 +46,13 @@ pub struct SelectConfig {
     /// How many candidate sets to sample/evaluate.
     pub n_candidates: usize,
     pub seed: u64,
+    /// If `Some(k)`, only consider candidate sets of **exactly** `k` markets
+    /// (used by the spec sweep so each "#geos" row reflects that size). If
+    /// `None`, considers all sizes from 1 to `max_treated`.
+    pub exact_size: Option<usize>,
+    /// Number of most-recent historical placebo windows to power over
+    /// (GeoLift's lookback). `None` = all available windows.
+    pub lookback: Option<usize>,
 }
 
 /// Evaluate a single candidate set: quick power probe + diagnostics → score.
@@ -61,6 +68,7 @@ pub fn evaluate(y: &Mat, treated: &[usize], cfg: &SelectConfig) -> MarketCandida
         cfg.alpha,
         cfg.target_power,
         cfg.min_pre,
+        cfg.lookback,
     );
     let power_at_target = pr
         .points
@@ -87,13 +95,36 @@ pub fn evaluate(y: &Mat, treated: &[usize], cfg: &SelectConfig) -> MarketCandida
     }
 }
 
-/// Build the candidate list: every single eligible market, plus sampled subsets
-/// of size 2..=max_treated.
+/// Build the candidate list. With `exact_size = Some(k)`, every candidate has
+/// exactly `k` markets; otherwise it's every singleton plus sampled subsets of
+/// size 2..=max_treated.
 fn candidate_sets(cfg: &SelectConfig) -> Vec<Vec<usize>> {
-    let mut sets: Vec<Vec<usize>> = cfg.eligible.iter().map(|&u| vec![u]).collect();
+    let mut rng = Xoshiro256pp::seed_from_u64(cfg.seed);
+    let mut seen = std::collections::HashSet::new();
+    let mut sets: Vec<Vec<usize>> = Vec::new();
+
+    if let Some(k) = cfg.exact_size {
+        let k = k.min(cfg.eligible.len()).max(1);
+        if k == 1 {
+            return cfg.eligible.iter().map(|&u| vec![u]).collect();
+        }
+        let mut attempts = 0;
+        while sets.len() < cfg.n_candidates && attempts < cfg.n_candidates * 40 {
+            attempts += 1;
+            let mut pool = cfg.eligible.clone();
+            rng.shuffle(&mut pool);
+            let mut pick: Vec<usize> = pool.into_iter().take(k).collect();
+            pick.sort_unstable();
+            if seen.insert(pick.clone()) {
+                sets.push(pick);
+            }
+        }
+        return sets;
+    }
+
+    // Mixed-size search: all singletons + sampled subsets of size 2..=max_treated.
+    sets = cfg.eligible.iter().map(|&u| vec![u]).collect();
     if cfg.max_treated >= 2 && cfg.eligible.len() >= 2 {
-        let mut rng = Xoshiro256pp::seed_from_u64(cfg.seed);
-        let mut seen = std::collections::HashSet::new();
         for s in &sets {
             seen.insert(s.clone());
         }

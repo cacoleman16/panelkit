@@ -103,6 +103,7 @@ pub fn power_curve(
     alpha: f64,
     target_power: f64,
     min_pre: usize,
+    lookback: Option<usize>,
 ) -> PowerResult {
     let t = y.cols();
     assert!(test_len >= 1 && test_len < t, "test_len out of range");
@@ -111,7 +112,18 @@ pub fn power_curve(
         first <= t - test_len,
         "not enough periods for the requested pre-window + test_len"
     );
-    let starts: Vec<usize> = (first..=(t - test_len)).collect();
+    // Every valid sliding test-window start position is one historical placebo.
+    // We power over MANY of them (the count is `n_windows`). `lookback`, when set,
+    // keeps only the most-recent K windows — GeoLift's "lookback_window": those
+    // are the most representative of the upcoming test (recent dynamics, longest
+    // pre-periods), at the cost of fewer placebo samples.
+    let mut starts: Vec<usize> = (first..=(t - test_len)).collect();
+    if let Some(k) = lookback {
+        let k = k.max(1);
+        if starts.len() > k {
+            starts = starts.split_off(starts.len() - k);
+        }
+    }
     let n_windows = starts.len();
     let (base_mean, base_sum) = treated_baseline(y, treated);
 

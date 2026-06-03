@@ -23,7 +23,7 @@ fn parse_method(s: &str) -> PyResult<Method> {
 
 /// Power analysis for one method via historical placebo with injected lift.
 #[pyfunction]
-#[pyo3(signature = (y, treated, test_len, lifts, method="sdid", alpha=0.1, target_power=0.8, min_pre=0))]
+#[pyo3(signature = (y, treated, test_len, lifts, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, lookback=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn geo_power(
     py: Python<'_>,
@@ -35,6 +35,7 @@ pub fn geo_power(
     alpha: f64,
     target_power: f64,
     min_pre: usize,
+    lookback: Option<usize>,
 ) -> PyResult<PyPowerResult> {
     let m = parse_method(method)?;
     let mat = mat_from_numpy(&y);
@@ -53,6 +54,7 @@ pub fn geo_power(
             alpha,
             target_power,
             min_pre,
+            lookback,
         )
     });
     Ok(PyPowerResult {
@@ -94,7 +96,7 @@ pub fn geo_diagnostics(
 
 /// Search and rank candidate treatment-market sets.
 #[pyfunction]
-#[pyo3(signature = (y, eligible, max_treated, test_len, target_lift, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, n_candidates=200, seed=0))]
+#[pyo3(signature = (y, eligible, max_treated, test_len, target_lift, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, n_candidates=200, seed=0, exact_size=None, lookback=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn geo_select(
     py: Python<'_>,
@@ -109,6 +111,8 @@ pub fn geo_select(
     min_pre: usize,
     n_candidates: usize,
     seed: u64,
+    exact_size: Option<usize>,
+    lookback: Option<usize>,
 ) -> PyResult<Vec<PyMarketCandidate>> {
     let m = parse_method(method)?;
     let mat = mat_from_numpy(&y);
@@ -128,6 +132,8 @@ pub fn geo_select(
         min_pre,
         n_candidates,
         seed,
+        exact_size,
+        lookback,
     };
     let ranked = py.allow_threads(move || select_markets(&mat, &cfg));
     Ok(ranked

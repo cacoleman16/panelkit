@@ -160,6 +160,7 @@ def geo_power(
     alpha: float = ...,
     target_power: float = ...,
     min_pre: int = ...,
+    lookback: Optional[int] = ...,
 ) -> PowerResult: ...
 def geo_diagnostics(
     y: npt.NDArray[np.float64], treated: Sequence[int], test_len: int
@@ -176,6 +177,8 @@ def geo_select(
     min_pre: int = ...,
     n_candidates: int = ...,
     seed: int = ...,
+    exact_size: Optional[int] = ...,
+    lookback: Optional[int] = ...,
 ) -> list[MarketCandidate]: ...
 def fit_callaway_py(
     y: npt.NDArray[np.float64],
