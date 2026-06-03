@@ -300,10 +300,16 @@ ev.plot_effect_over_time("effect.png")  # pointwise + cumulative over time, w/ C
 ev.lift, ev.cumulative, ev.significant
 ```
 
-Each estimate gets a confidence interval from a **stationary block bootstrap** of
-its post-period effect path; an **SC in-space placebo** supplies a p-value. The
-ensemble uses the same `weights` choices as `power()` (`"auto"` = inverse-variance
-from each method's bootstrap SE, `"equal"`, or an explicit dict/list). `ev` exposes
+Inference is **in-space placebo** (Abadie): every donor market is refit as if it
+were the treated one, and the spread of *their* post-period effects is the null
+reference — capturing out-of-sample extrapolation error, the real source of
+uncertainty. (A bootstrap of the treated unit's own post-period only sees
+in-sample noise and is wildly anti-conservative — on null data its 90% interval
+falsely flags an effect ~50% of the time; the placebo version sits at/below the
+nominal 10%.) Poorly-fit placebos (pre-period RMSPE > 2× the treated unit's) are
+dropped, per Abadie. The p-value is the placebo rank of the treated effect, and
+`"auto"` ensemble weights are inverse-variance from each method's placebo-null
+spread. `ev` exposes
 `.lift`, `.att`, `.cumulative`, `.significant`, the per-method results in `ev.per`,
 and the ensemble in `ev.ensemble`. Reported numbers: **% lift** (effect ÷
 counterfactual), **per-period ATT**, and **cumulative incremental** over the
@@ -315,13 +321,13 @@ you can see it sits flat (centered on zero) inside the noise band before the tes
 starts (a placebo check) and breaks out after — and the running **cumulative
 incremental**, each as a point estimate with a confidence band. The counterfactual
 is centered on the pre-period, so the gap shows fit quality rather than a level
-offset (SDID matches trends, not levels). The bands come from a **moving-block
-bootstrap** of the pre-period residuals: resampling whole blocks preserves their
-autocorrelation, so the intervals are more conservative than an iid normal
-approximation — the cumulative band in particular widens faster than √k when the
-residuals are positively autocorrelated. Raise `block_len` to capture longer-range
-dependence (wider, more conservative cumulative bands). Pass `exclude=[…]` to drop
-markets from the control pool (e.g. ones you don't trust as donors).
+offset (SDID matches trends, not levels). The bands come from the **in-space
+placebo** distribution: at each horizon, the pointwise band is the spread of the
+donor placebos' per-period effects, and the cumulative band is the spread of their
+cumulative sums (so it fans out with horizon). Placebo inference needs a decent
+donor pool to have power — with only a handful of comparable donors the intervals
+are necessarily wide. Pass `exclude=[…]` to drop markets from the control pool
+(e.g. ones you don't trust as donors).
 
 ### Choosing a specification — `design.recommend(test_lengths, n_geos_options, target_lift, alphas=…)`
 

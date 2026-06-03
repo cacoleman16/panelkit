@@ -243,7 +243,7 @@ per-cell MDE/confidence/holdout report and a combined figure:
 **Evaluate a test that ran.** `evaluate(...)` is the measurement counterpart to
 the power analysis: fit SC / ASC / SDID on a test that already happened, blend
 them into a weighted-average **ensemble** estimate, and report each one's lift,
-confidence interval (stationary block bootstrap), and cumulative incremental —
+confidence interval (in-space placebo), and cumulative incremental —
 with an SC in-space placebo p-value:
 
 ![test evaluation](assets/geo_evaluate.png)
