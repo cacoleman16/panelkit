@@ -107,11 +107,11 @@ fn bootstrap_engines_thread_count_invariant() {
 #[test]
 fn jackknife_se_of_constant_is_zero() {
     let est = vec![2.0; 10];
-    assert!(jackknife_se(&est, 2.0) < 1e-12);
+    assert!(jackknife_se(&est) < 1e-12);
 }
 
 #[test]
 fn jackknife_se_positive_for_varying() {
     let est = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-    assert!(jackknife_se(&est, 3.0) > 0.0);
+    assert!(jackknife_se(&est) > 0.0);
 }
