@@ -1,13 +1,15 @@
 //! Python entry points for the synthetic-control family.
 
-use numpy::PyReadonlyArray2;
+use numpy::{PyArray1, PyReadonlyArray2, PyReadonlyArray3};
 use panelkit_estimators::mcnnm::{fit_mcnnm_at, McnnmConfig};
 use panelkit_estimators::sc::cpasc::{fit_at as fit_cpasc_at, CpascConfig, PoolMode};
 use panelkit_estimators::sc::{fit_asc_at, fit_at, fit_sdid_at, AscConfig, ScConfig, SdidConfig};
 use panelkit_estimators::{Panel, ScFit};
 use panelkit_inference::{
-    block_bootstrap_mean, percentile_ci, sc_placebo, stationary_bootstrap_mean,
+    asc_att_many, block_bootstrap_mean, percentile_ci, sc_att_many, sc_placebo, sdid_att_many,
+    stationary_bootstrap_mean,
 };
+use panelkit_linalg::Mat;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -198,4 +200,57 @@ pub fn fit_cpasc(
         pooled_residual: fit.pooled_residual,
         t0: fit.t0,
     })
+}
+
+/// Batched, parallel fitting for Monte-Carlo / power-analysis / robustness runs.
+///
+/// `y3` is a stack of panels `(R, N, T)` — replication `r` is an `N×T` panel
+/// sharing the same `treated`/`treat_time`. Returns an array of `R` ATTs, one
+/// per replication, computed in parallel in Rust with the GIL released.
+/// `method` is "sc", "asc", or "sdid".
+#[pyfunction]
+#[pyo3(signature = (y3, treated, treat_time, method="sc", ridge=0.0, zeta_scale=1.0))]
+pub fn fit_many<'py>(
+    py: Python<'py>,
+    y3: PyReadonlyArray3<f64>,
+    treated: Vec<usize>,
+    treat_time: usize,
+    method: &str,
+    ridge: f64,
+    zeta_scale: f64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let view = y3.as_array();
+    let (r, n, t) = (view.shape()[0], view.shape()[1], view.shape()[2]);
+
+    // Build the panels while the GIL is held (we touch the numpy buffer here).
+    let mut panels = Vec::with_capacity(r);
+    for rr in 0..r {
+        let mut m = Mat::zeros(n, t);
+        for i in 0..n {
+            for j in 0..t {
+                m.set(i, j, view[[rr, i, j]]);
+            }
+        }
+        panels.push(Panel::block(m, &treated, treat_time));
+    }
+
+    // The fitting is pure Rust — release the GIL so rayon can use every core.
+    let method = method.to_string();
+    let atts = py
+        .allow_threads(move || match method.as_str() {
+            "sc" => Ok(sc_att_many(panels, treat_time, ScConfig { ridge })),
+            "asc" => Ok(asc_att_many(
+                panels,
+                treat_time,
+                AscConfig {
+                    sc_ridge: ridge,
+                    aug_lambda: None,
+                },
+            )),
+            "sdid" => Ok(sdid_att_many(panels, treat_time, SdidConfig { zeta_scale })),
+            other => Err(format!("unknown method '{other}' (expected sc/asc/sdid)")),
+        })
+        .map_err(PyValueError::new_err)?;
+
+    Ok(PyArray1::from_vec_bound(py, atts))
 }

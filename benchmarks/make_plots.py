@@ -18,7 +18,7 @@ import time
 import numpy as np
 from scipy.optimize import minimize
 
-from panelkit import SyntheticControl
+from panelkit import AugmentedSC, MCNNM, SyntheticControl, SyntheticDiD
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(os.path.dirname(HERE), "assets")
@@ -55,6 +55,107 @@ def reference_sc(Y):
     )
     w = res.x
     return float(np.mean(Y[0, T0:] - Y[1:, T0:].T @ w))
+
+
+def _slsqp_sc_weights(z0, y_pre):
+    j = z0.shape[1]
+    cons = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    res = minimize(
+        lambda w: float(np.sum((y_pre - z0 @ w) ** 2)),
+        np.full(j, 1.0 / j),
+        jac=lambda w: -2.0 * (z0.T @ (y_pre - z0 @ w)),
+        bounds=[(0.0, 1.0)] * j, constraints=cons, method="SLSQP",
+        options={"maxiter": 1000, "ftol": 1e-12},
+    )
+    return res.x
+
+
+def reference_asc(Y):
+    """Augmented SC reference: SLSQP SC weights + closed-form ridge augmentation
+    (matches panelkit's ASC math)."""
+    y_pre = Y[0, :T0]
+    z0 = Y[1:, :T0].T  # (T_pre, J)
+    w = _slsqp_sc_weights(z0, y_pre)
+    imbalance = y_pre - z0 @ w
+    g = z0 @ z0.T  # (T_pre, T_pre)
+    lam = 0.1 * np.trace(g) / g.shape[0]
+    A = g + lam * np.eye(g.shape[0])
+    donor_post = Y[1:, T0:].T  # (T_post, J)
+    cf = []
+    for tt in range(donor_post.shape[0]):
+        dp = donor_post[tt]
+        eta = np.linalg.solve(A, z0 @ dp)
+        cf.append(dp @ w + imbalance @ eta)
+    return float(np.mean(Y[0, T0:] - np.array(cf)))
+
+
+def reference_sdid(Y):
+    """Synthetic DiD reference (NumPy + SciPy SLSQP), mirroring panelkit's SDID:
+    ridge-regularized unit weights + time weights (each a simplex QP with a
+    concentrated-out intercept), then a doubly-weighted 2x2 DiD."""
+    t_post = T - T0
+    ytr = Y[0]
+    ctrl = Y[1:]
+    j = ctrl.shape[0]
+    ctrl_pre = ctrl[:, :T0].T   # (T_pre, J)
+    ctrl_post = ctrl[:, T0:].T  # (T_post, J)
+
+    # Unit weights: match treated pre path, ridge zeta^2*T_pre, simplex+intercept.
+    sd = np.diff(ctrl[:, :T0], axis=1).std(ddof=1)
+    zeta = (1 * t_post) ** 0.25 * sd          # n_treated = 1
+    eta_unit = zeta * zeta * T0
+    col_mean = ctrl_pre.mean(axis=0)
+    M = ctrl_pre - col_mean
+    ytil = ytr[:T0] - ytr[:T0].mean()
+    consu = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    omega = minimize(
+        lambda w: float(np.sum((ytil - M @ w) ** 2) + eta_unit * (w @ w)),
+        np.full(j, 1.0 / j),
+        jac=lambda w: -2.0 * (M.T @ (ytil - M @ w)) + 2.0 * eta_unit * w,
+        bounds=[(0.0, 1.0)] * j, constraints=consu, method="SLSQP",
+        options={"maxiter": 1000, "ftol": 1e-12},
+    ).x
+
+    # Time weights: match each control's post-avg from pre path, simplex+intercept.
+    Dt = ctrl_pre.T  # (J, T_pre)
+    cpost_avg = ctrl_post.mean(axis=0)  # (J,)
+    Mt = Dt - Dt.mean(axis=0)
+    ttil = cpost_avg - cpost_avg.mean()
+    consl = [{"type": "eq", "fun": lambda l: np.sum(l) - 1.0}]
+    lam = minimize(
+        lambda l: float(np.sum((ttil - Mt @ l) ** 2)),
+        np.full(T0, 1.0 / T0),
+        jac=lambda l: -2.0 * (Mt.T @ (ttil - Mt @ l)),
+        bounds=[(0.0, 1.0)] * T0, constraints=consl, method="SLSQP",
+        options={"maxiter": 1000, "ftol": 1e-12},
+    ).x
+
+    ytr_pre_lambda = float((lam * ytr[:T0]).sum())
+    ytr_post = float(ytr[T0:].mean())
+    ctrl_term = sum(
+        omega[k] * (cpost_avg[k] - float((lam * ctrl_pre[:, k]).sum())) for k in range(j)
+    )
+    return (ytr_post - ytr_pre_lambda) - ctrl_term
+
+
+def reference_mcnnm(Y, lam, max_iter=100, tol=1e-4):
+    """MC-NNM SoftImpute using LAPACK SVD (np.linalg.svd) — the natural, highly
+    optimized reference for the iterative-SVT inner loop."""
+    n, t_ = Y.shape
+    obs = np.ones((n, t_), dtype=bool)
+    obs[0, T0:] = False
+    L = np.zeros((n, t_))
+    for _ in range(max_iter):
+        M = np.where(obs, Y, L)
+        U, s, Vt = np.linalg.svd(M, full_matrices=False)
+        s2 = np.maximum(s - lam, 0.0)
+        Lnew = (U * s2) @ Vt
+        num = np.linalg.norm(Lnew - L)
+        den = np.linalg.norm(L)
+        L = Lnew
+        if den > 0 and num / den < tol:
+            break
+    return float(np.mean(Y[0, T0:] - L[0, T0:]))
 
 
 def median_time(fn, reps):
@@ -142,6 +243,45 @@ ref_single = ref_ms[-1] / 1e3
 lines.append("")
 lines.append(f"full placebo @N={N_PB}: panelkit {pk_pb:.4f}s | reference {ref_pb:.3f}s "
              f"| speedup {ref_pb / pk_pb:.0f}x")
+
+# ---------------------------------------------------------------------------
+# 3) Per-fit time by method at N=200 (panelkit vs NumPy+SciPy reference).
+#    SC / ASC / SDID are simplex-QP-based — Frank–Wolfe vs SLSQP. Median over
+#    the same panels as the sweep.
+# ---------------------------------------------------------------------------
+asc_model = AugmentedSC()
+sdid_model = SyntheticDiD()
+pk_asc, ref_asc_ms, pk_sdid, ref_sdid_ms = [], [], [], []
+for sd in SEEDS:
+    Y = make_panel(N_PB, seed=sd)
+    pk_asc.append(median_time(lambda: asc_model.fit(Y, treated=[0], treat_time=T0), reps=20))
+    ref_asc_ms.append(median_time(lambda: reference_asc(Y), reps=7))
+    pk_sdid.append(median_time(lambda: sdid_model.fit(Y, treated=[0], treat_time=T0), reps=20))
+    ref_sdid_ms.append(median_time(lambda: reference_sdid(Y), reps=5))
+methods = {
+    "SC": (pk_single * 1e3, ref_single * 1e3),
+    "ASC": (statistics.median(pk_asc) * 1e3, statistics.median(ref_asc_ms) * 1e3),
+    "SDID": (statistics.median(pk_sdid) * 1e3, statistics.median(ref_sdid_ms) * 1e3),
+}
+lines.append("")
+lines.append(f"per-fit time by method @N={N_PB} (ms):")
+lines.append(f"{'method':>8}{'panelkit':>12}{'reference':>12}{'speedup':>10}")
+for name, (p, r) in methods.items():
+    lines.append(f"{name:>8}{p:>12.3f}{r:>12.3f}{r / p:>9.1f}x")
+
+# Honest MC-NNM probe: panelkit's from-scratch Jacobi SVD vs LAPACK np.linalg.svd
+# inside SoftImpute. We expect LAPACK to win — report it straight.
+Ymc = make_panel(N_PB, seed=7)
+smax = float(np.linalg.svd(Ymc, compute_uv=False)[0])
+mc_lambda = 0.3 * smax
+mc_model = MCNNM(lambda_=mc_lambda, max_iter=100, tol=1e-4)
+pk_mc = median_time(lambda: mc_model.fit(Ymc, treated=[0], treat_time=T0), reps=3)
+ref_mc = median_time(lambda: reference_mcnnm(Ymc, mc_lambda, 100, 1e-4), reps=3)
+lines.append("")
+lines.append(f"MC-NNM @N={N_PB} (fixed lambda, honest): panelkit {pk_mc * 1e3:.1f}ms | "
+             f"LAPACK-SVD reference {ref_mc * 1e3:.1f}ms | ratio {ref_mc / pk_mc:.2f}x "
+             f"({'panelkit faster' if ref_mc > pk_mc else 'reference faster — LAPACK SVD wins'})")
+
 results = "\n".join(lines)
 print(results)
 with open(os.path.join(ASSETS, "bench_results.txt"), "w") as f:
@@ -196,4 +336,26 @@ for i, (pv, rv) in enumerate(zip(pk_vals, ref_vals)):
 fig.tight_layout()
 fig.savefig(os.path.join(ASSETS, "bench_speedup.png"), dpi=150)
 
-print("\nwrote assets/bench_scaling.png, assets/bench_speedup.png, assets/bench_results.txt")
+# Figure 3: per-fit time by method (SC / ASC / SDID), panelkit vs reference.
+fig, ax = plt.subplots(figsize=(6.4, 4.0))
+names = list(methods.keys())
+pk_v = [methods[n][0] for n in names]
+ref_v = [methods[n][1] for n in names]
+x = np.arange(len(names))
+w = 0.38
+ax.bar(x - w / 2, ref_v, w, color=REF, label="NumPy + SciPy SLSQP")
+ax.bar(x + w / 2, pk_v, w, color=PK, label="panelkit (Rust)")
+ax.set_yscale("log")
+ax.set_xticks(x)
+ax.set_xticklabels(names)
+ax.set_ylabel("time per fit (ms, log scale)")
+ax.set_title(f"Per-fit time by estimator  (N={N_PB}, T={T})")
+ax.grid(True, axis="y", which="both", alpha=0.25)
+ax.legend()
+for i, (pv, rv) in enumerate(zip(pk_v, ref_v)):
+    ax.annotate(f"{rv / pv:.0f}x", (i + w / 2, pv), textcoords="offset points",
+                xytext=(0, 6), ha="center", fontsize=9, color=PK, fontweight="bold")
+fig.tight_layout()
+fig.savefig(os.path.join(ASSETS, "bench_methods.png"), dpi=150)
+
+print("\nwrote assets/bench_scaling.png, bench_speedup.png, bench_methods.png, bench_results.txt")

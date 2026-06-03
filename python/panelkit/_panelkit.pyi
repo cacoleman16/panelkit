@@ -105,6 +105,14 @@ def bootstrap_mean(
     seed: int = ...,
     level: float = ...,
 ) -> tuple[float, float, float]: ...
+def fit_many(
+    y3: npt.NDArray[np.float64],
+    treated: Sequence[int],
+    treat_time: int,
+    method: str = ...,
+    ridge: float = ...,
+    zeta_scale: float = ...,
+) -> npt.NDArray[np.float64]: ...
 def fit_twfe_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> DiDResult: ...
 def fit_callaway_py(
     y: npt.NDArray[np.float64], cohorts: Sequence[int], control: str = ...

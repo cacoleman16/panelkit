@@ -96,6 +96,15 @@ class _Result:
         return repr(self._raw)
 
 
+def _as_stack(panels) -> np.ndarray:
+    arr = np.ascontiguousarray(np.asarray(panels, dtype=np.float64))
+    if arr.ndim != 3:
+        raise ValueError(
+            f"panel stack must be 3-D (R reps × N units × T periods), got shape {arr.shape}"
+        )
+    return arr
+
+
 def _attach_bootstrap(result, inference, level, block_len, n_reps, seed):
     """Run a block/stationary bootstrap of the post-period gap and attach
     se / ci to an SC-family result."""
@@ -165,6 +174,16 @@ class SyntheticControl:
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
         )
 
+    def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
+        """Fit across a stack of panels in parallel (for Monte-Carlo / power /
+        robustness runs). ``panels`` is ``(R, N, T)``; returns ``R`` ATTs."""
+        stack = _as_stack(panels)
+        return np.asarray(
+            _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
+                               "sc", self.ridge, 1.0),
+            dtype=float,
+        )
+
 
 class AugmentedSC:
     """Augmented Synthetic Control (Ben-Michael, Feller & Rothstein 2021).
@@ -199,6 +218,15 @@ class AugmentedSC:
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
         )
 
+    def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
+        """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
+        stack = _as_stack(panels)
+        return np.asarray(
+            _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
+                               "asc", self.sc_ridge, 1.0),
+            dtype=float,
+        )
+
 
 class SyntheticDiD:
     """Synthetic Difference-in-Differences (Arkhangelsky et al. 2021).
@@ -231,6 +259,15 @@ class SyntheticDiD:
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
+        )
+
+    def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
+        """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
+        stack = _as_stack(panels)
+        return np.asarray(
+            _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
+                               "sdid", 0.0, self.zeta_scale),
+            dtype=float,
         )
 
 

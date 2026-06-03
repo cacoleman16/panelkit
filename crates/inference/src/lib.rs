@@ -6,11 +6,13 @@
 //! per-replicate seeded substreams, which makes results bit-identical regardless
 //! of thread count.
 
+pub mod batch;
 pub mod bootstrap;
 pub mod ci;
 pub mod parallel;
 pub mod placebo;
 
+pub use batch::{asc_att_many, sc_att_many, sdid_att_many};
 pub use bootstrap::{
     block_bootstrap_mean, jackknife_se, multiplier_bootstrap, stationary_bootstrap_mean,
 };
