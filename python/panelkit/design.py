@@ -464,10 +464,20 @@ _PK_GREY = "#9ca3af"
 _METHOD_COLORS = {"SC": _PK_GREY, "ASC": _PK_AMBER, "SDID": _PK_BLUE}
 
 
-def _plot_power(rep: _PowerReport, path):
-    import matplotlib
+def _require_mpl():
+    try:
+        import matplotlib
+    except ImportError as e:  # pragma: no cover
+        raise ImportError(
+            "plotting needs matplotlib — install it with `pip install panelkit[plot]`"
+        ) from e
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    return matplotlib, plt
+
+
+def _plot_power(rep: _PowerReport, path):
+    _, plt = _require_mpl()
     from matplotlib.gridspec import GridSpec
 
     best = rep.best
@@ -540,9 +550,7 @@ def _plot_power(rep: _PowerReport, path):
 
 
 def _plot_scenarios(grid: "_ScenarioGrid", path):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    _, plt = _require_mpl()
     import numpy as _np
     from matplotlib.gridspec import GridSpec
 
