@@ -201,10 +201,15 @@ mc = design.multi_cell(cells={"west": ["los_angeles", "san_diego"],
 print(mc.summary())           # per-cell MDE / confidence / holdout
 mc.plot("multicell.png")      # the multi-cell figure below
 
+# pin in must-have markets, drop ones you don't trust:
+ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3,
+                               include=["chicago"], exclude=["miami"])
+
 # already ran the test? measure it (SC/ASC/SDID + a weighted-average ensemble):
 ev = design.evaluate(treated=["chicago", "denver"], treat_start=52)
 print(ev.summary())           # per-method + ensemble lift, CI, cumulative
 ev.plot("evaluate.png")       # observed vs counterfactual + lift-by-method
+ev.plot_effect_over_time("effect.png")   # pointwise + cumulative over time, w/ CIs
 
 # or sweep specifications (length × #geos × significance) and recommend one:
 grid = design.recommend(test_lengths=[4, 6, 8, 12], n_geos_options=[3, 5, 10, 20],
@@ -242,6 +247,18 @@ confidence interval (stationary block bootstrap), and cumulative incremental —
 with an SC in-space placebo p-value:
 
 ![test evaluation](assets/geo_evaluate.png)
+
+And the **effect over time** — the pointwise effect across the full timeline
+(pre-period included, so you can see it sit flat in the noise band before the test
+and break out after) plus the running cumulative incremental, each as a point
+estimate with a confidence band:
+
+![effect over time](assets/geo_effect_over_time.png)
+
+**Pin in / drop markets.** `select_markets`/`recommend` take `include=[…]`
+(force must-treat markets into every candidate) and `exclude=[…]` (drop markets
+entirely — never treated, never a control). `exclude` is also accepted by
+`power`, `diagnose`, and `evaluate` to keep a market out of the donor pool.
 
 **Messy DataFrame? No problem.** `from_long` coerces real-world data: outcome
 strings → numeric (with a clear error on genuinely non-numeric values), dates

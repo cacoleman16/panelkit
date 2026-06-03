@@ -52,6 +52,26 @@ def _ensemble_weight_arg(spec):
     return w
 
 
+def _placebo_paths(pre_gaps, length, block_len, n_reps, seed):
+    """Moving-block bootstrap of the (centered) pre-period residuals into placebo
+    paths of ``length`` periods. Resampling whole blocks preserves the residual
+    autocorrelation, so the resulting CI bands are more conservative than an iid
+    normal approximation. Returns an ``(n_reps, length)`` array (empty if no
+    pre-period or zero length)."""
+    g = np.asarray(pre_gaps, dtype=float)
+    m = len(g)
+    if m == 0 or length <= 0 or n_reps <= 0:
+        return np.empty((0, max(length, 0)))
+    g = g - g.mean()  # null is "no effect" → center the residuals
+    rng = np.random.default_rng(int(seed))
+    bl = max(1, min(int(block_len), m))
+    n_blocks = int(np.ceil(length / bl))
+    starts = rng.integers(0, m, size=(n_reps, n_blocks))
+    idx = (starts[:, :, None] + np.arange(bl)[None, None, :]) % m  # circular blocks
+    paths = g[idx].reshape(n_reps, n_blocks * bl)[:, :length]
+    return paths
+
+
 class _PowerReport:
     """Result of a power analysis across methods, with a report and plots."""
 
@@ -352,6 +372,22 @@ class GeoDesign:
                 out.append(self._index[m])
         return out
 
+    def _names_of(self, markets) -> list:
+        """Resolve markets (names or indices) to their string names."""
+        return [self.names[i] for i in self._resolve(markets)]
+
+    def _without(self, exclude):
+        """Return ``(sub_design, excluded_name_set)`` with the excluded markets
+        dropped entirely (so they're neither treated nor used as controls). Names
+        are preserved, so callers can pass markets to the sub-design by name."""
+        ex = set(self._names_of(exclude)) if exclude else set()
+        if not ex:
+            return self, ex
+        keep = [i for i in range(self.n) if self.names[i] not in ex]
+        if not keep:
+            raise ValueError("exclude removes every market — nothing left to analyze")
+        return GeoDesign(self.Y[keep], names=[self.names[i] for i in keep]), ex
+
     def power(
         self,
         treated,
@@ -364,6 +400,7 @@ class GeoDesign:
         lookback: int | None = None,
         ensemble: bool = True,
         ensemble_weights="auto",
+        exclude=None,
     ) -> _PowerReport:
         """Power analysis for a specified treated-market set across methods.
 
@@ -376,7 +413,20 @@ class GeoDesign:
         power reflects the averaged estimator, which is usually steadier than any
         one method). ``ensemble_weights`` is ``"auto"`` (data-driven inverse-variance
         weighting from each method's historical-null spread), ``"equal"``, or a dict
-        like ``{"SC": 0.5, "ASC": 0.2, "SDID": 0.3}``."""
+        like ``{"SC": 0.5, "ASC": 0.2, "SDID": 0.3}``.
+
+        ``exclude`` drops markets entirely (e.g. contaminated or untrustworthy
+        ones) so they're never used as donors/controls."""
+        if exclude:
+            sub, ex = self._without(exclude)
+            tnames = self._names_of(treated)
+            bad = [n for n in tnames if n in ex]
+            if bad:
+                raise ValueError(f"treated markets were also excluded: {bad}")
+            return sub.power(tnames, test_len, lifts=lifts, methods=methods, alpha=alpha,
+                             target_power=target_power, recommended=recommended,
+                             lookback=lookback, ensemble=ensemble,
+                             ensemble_weights=ensemble_weights)
         idx = self._resolve(treated)
         names = [self.names[i] for i in idx]
         lifts = list(_DEFAULT_LIFTS if lifts is None else lifts)
@@ -398,13 +448,21 @@ class GeoDesign:
         rec = recommended if recommended in results else list(results)[0]
         return _PowerReport(self, idx, names, test_len, results, diag, rec, alpha, target_power)
 
-    def diagnose(self, treated, test_len: int) -> "_DiagnosticsReport":
+    def diagnose(self, treated, test_len: int, exclude=None) -> "_DiagnosticsReport":
         """Real-world guardrails for a treated-market set: pre-period fit,
         seasonality, holdout, stability, and warnings — with a visual.
 
         Returns a report with ``.summary()`` and ``.plot(path)`` (the guardrails
         figure: treated-vs-synthetic pre-fit, seasonality ACF, holdout share, and
-        a scorecard listing any warnings)."""
+        a scorecard listing any warnings). ``exclude`` drops markets from the
+        control pool entirely."""
+        if exclude:
+            sub, ex = self._without(exclude)
+            tnames = self._names_of(treated)
+            bad = [n for n in tnames if n in ex]
+            if bad:
+                raise ValueError(f"treated markets were also excluded: {bad}")
+            return sub.diagnose(tnames, test_len)
         idx = self._resolve(treated)
         names = [self.names[i] for i in idx]
         t0 = self.t - int(test_len)
@@ -431,18 +489,46 @@ class GeoDesign:
         top: int = 10,
         exact_size: int | None = None,
         lookback: int | None = None,
+        include=None,
+        exclude=None,
     ) -> list:
         """Search candidate treatment-market sets and return the top ranked.
 
         ``exact_size=k`` restricts the search to sets of exactly ``k`` markets
         (otherwise sizes 1..``max_treated`` are considered). ``lookback=k`` powers
-        over the most-recent ``k`` historical windows."""
+        over the most-recent ``k`` historical windows.
+
+        ``include`` forces specific markets into **every** candidate treatment set
+        (must-treat markets); the search fills the remaining slots from
+        ``eligible``. ``exclude`` drops markets entirely — they're never treated
+        and never used as controls."""
+        if exclude:
+            sub, ex = self._without(exclude)
+            elig_names = self._names_of(eligible) if eligible is not None else None
+            if elig_names is not None:
+                elig_names = [n for n in elig_names if n not in ex]
+            inc_names = self._names_of(include) if include else None
+            if inc_names is not None:
+                bad = [n for n in inc_names if n in ex]
+                if bad:
+                    raise ValueError(f"markets in both include and exclude: {bad}")
+            return sub.select_markets(
+                test_len, target_lift, max_treated, eligible=elig_names, method=method,
+                alpha=alpha, target_power=target_power, n_candidates=n_candidates,
+                seed=seed, top=top, exact_size=exact_size, lookback=lookback,
+                include=inc_names, exclude=None)
+
         elig = self._resolve(eligible) if eligible is not None else list(range(self.n))
+        inc = sorted(set(self._resolve(include))) if include else []
+        if len(inc) > int(max_treated):
+            raise ValueError(f"include has {len(inc)} markets but max_treated="
+                             f"{max_treated}; raise max_treated or include fewer")
         ranked = _panelkit.geo_select(
             self.Y, elig, int(max_treated), int(test_len), float(target_lift),
             method.lower(), alpha, target_power, 0, int(n_candidates), int(seed),
             None if exact_size is None else int(exact_size),
             None if lookback is None else int(lookback),
+            inc or None,
         )
         out = []
         for c in ranked[:top]:
@@ -470,6 +556,8 @@ class GeoDesign:
         seed: int = 0,
         min_confidence: float = 60.0,
         lookback: int | None = None,
+        include=None,
+        exclude=None,
     ) -> "_ScenarioGrid":
         """Sweep designs across **specifications** — test length × number of geos
         × significance level (alpha) — and recommend the best.
@@ -477,7 +565,9 @@ class GeoDesign:
         For each (alpha, test_len, n_geos) cell it searches for the best set of
         exactly ``n_geos`` treatment markets and records its MDE, power, holdout,
         and confidence. Returns a :class:`_ScenarioGrid` with a recommendation,
-        a plain-English summary, and a tradeoffs figure.
+        a plain-English summary, and a tradeoffs figure. ``include`` forces
+        must-treat markets into every candidate; ``exclude`` drops markets
+        entirely.
         """
         rows = []
         for alpha in alphas:
@@ -488,6 +578,7 @@ class GeoDesign:
                         eligible=eligible, method=method, alpha=alpha,
                         target_power=target_power, n_candidates=n_candidates,
                         seed=seed, top=1, exact_size=ng, lookback=lookback,
+                        include=include, exclude=exclude,
                     )
                     best = ranked[0] if ranked else None
                     if best is None:
@@ -613,6 +704,7 @@ class GeoDesign:
         n_boot: int = 2000,
         block_len: int = 4,
         seed: int = 0,
+        exclude=None,
     ) -> "_EvalReport":
         """Estimate the realized effect of a geo test that has **already run**.
 
@@ -643,8 +735,17 @@ class GeoDesign:
         -------
         _EvalReport
             With ``.summary()``, ``.plot(path)``, per-method results, and the
-            ensemble point estimate / interval / lift.
+            ensemble point estimate / interval / lift. ``exclude`` drops markets
+            from the control pool entirely.
         """
+        if exclude:
+            sub, ex = self._without(exclude)
+            tnames = self._names_of(treated)
+            bad = [n for n in tnames if n in ex]
+            if bad:
+                raise ValueError(f"treated markets were also excluded: {bad}")
+            return sub.evaluate(tnames, treat_start, methods=methods, weights=weights,
+                                level=level, n_boot=n_boot, block_len=block_len, seed=seed)
         idx = self._resolve(treated)
         names = [self.names[i] for i in idx]
         t0 = int(treat_start)
@@ -661,6 +762,7 @@ class GeoDesign:
             "ASC": lambda: _panelkit.fit_asc(self.Y, idx, t0, 0.0, None),
             "SDID": lambda: _panelkit.fit_sdid(self.Y, idx, t0, 1.0),
         }
+        treated_series = self.Y[idx].mean(axis=0)
         per = {}
         for m in methods:
             fit = fitters[m]()
@@ -671,8 +773,21 @@ class GeoDesign:
             se, lo, hi = _panelkit.bootstrap_mean(
                 att_path.tolist(), "stationary", int(block_len), int(n_boot),
                 int(seed), float(level))
+            # Full-timeline counterfactual via donor weights (exact for SC; the
+            # dominant term for ASC/SDID). Center on the pre-period so the gap
+            # reflects FIT, not a level offset — SDID is level-agnostic (matches
+            # trends, not levels), so its donor-weighted series sits at a constant
+            # offset that would otherwise look like a non-zero pre-period.
+            dids = np.asarray(fit.donor_ids, dtype=int)
+            ws = np.asarray(fit.weights, dtype=float)
+            if dids.size:
+                full_cf = self.Y[dids].T @ ws
+                full_cf = full_cf + (treated_series[:t0].mean() - full_cf[:t0].mean())
+            else:
+                full_cf = np.full(self.t, np.nan)
             per[m] = {
                 "att": att, "att_path": att_path, "counterfactual": cf,
+                "full_cf": full_cf,
                 "cf_mean": cf_mean, "lift": att / cf_mean if cf_mean else float("nan"),
                 "se": se, "att_lo": lo, "att_hi": hi,
                 "lift_lo": lo / cf_mean if cf_mean else float("nan"),
@@ -719,16 +834,57 @@ class GeoDesign:
             "weights": wmap,
         }
 
-        # Significance: SC in-space placebo p-value, plus a full SC counterfactual
-        # (donor-weight reconstruction) for the timeline plot.
+        # Significance: SC in-space placebo p-value.
         sc = _panelkit.fit_sc(self.Y, idx, t0, 0.0, True, level)
         p_value = sc.p_value
-        donors = np.asarray(sc.donor_ids, dtype=int)
-        w_sc = np.asarray(sc.weights, dtype=float)
-        full_cf = (self.Y[donors].T @ w_sc) if donors.size else np.full(self.t, np.nan)
-        treated_series = self.Y[idx].mean(axis=0)
+
+        # Full-timeline ensemble counterfactual + gap path (pre-period shows fit,
+        # post-period uses the exact ensemble effect).
+        ens_full_cf = sum(wmap[m] * per[m]["full_cf"] for m in order)
+        full_gap = treated_series - ens_full_cf
+        full_gap[t0:] = ens_path                       # exact ensemble post effect
+        counterfactual = treated_series - full_gap     # consistent everywhere
+        pre_gaps = full_gap[:t0]
+        sigma_pre = float(np.std(pre_gaps, ddof=1)) if t0 > 1 else float(np.std(pre_gaps))
+
+        # CI bands from a MOVING-BLOCK BOOTSTRAP of the pre-period residuals.
+        # Blocks preserve autocorrelation, so the bands are more conservative than
+        # an iid normal approximation — especially the cumulative band, whose
+        # spread grows faster than sqrt(k) under positive autocorrelation.
+        post_len = self.t - t0
+        a = (1.0 - float(level)) / 2.0
+        paths = _placebo_paths(pre_gaps, post_len, int(block_len), int(n_boot), int(seed))
+        if paths.size:
+            point_lo = np.quantile(paths, a, axis=0)
+            point_hi = np.quantile(paths, 1.0 - a, axis=0)
+            point_hw = float(np.quantile(np.abs(paths), float(level)))  # symmetric, full-timeline
+            cum_paths = np.cumsum(paths, axis=1)
+            cum_band_lo = np.quantile(cum_paths, a, axis=0)
+            cum_band_hi = np.quantile(cum_paths, 1.0 - a, axis=0)
+        else:
+            point_lo = point_hi = np.zeros(post_len)
+            point_hw = 0.0
+            cum_band_lo = cum_band_hi = np.zeros(post_len)
+
+        ens_post = ens_path
+        run = np.cumsum(ens_post)
+        cum_curve = run * n_treated
+        cum_lo_curve = (run + cum_band_lo) * n_treated
+        cum_hi_curve = (run + cum_band_hi) * n_treated
+
+        ensemble["sigma_pre"] = sigma_pre
+        ensemble["full_gap"] = full_gap
+        ensemble["point_hw"] = point_hw                       # constant pointwise half-width
+        ensemble["point_lo"] = ens_post + point_lo            # per-period CI on the effect
+        ensemble["point_hi"] = ens_post + point_hi
+        ensemble["cum_curve"] = cum_curve                     # cumulative incremental path
+        ensemble["cum_lo_curve"] = cum_lo_curve
+        ensemble["cum_hi_curve"] = cum_hi_curve
+        ensemble["cum_lo"] = float(cum_lo_curve[-1]) if post_len else float("nan")
+        ensemble["cum_hi"] = float(cum_hi_curve[-1]) if post_len else float("nan")
+
         return _EvalReport(names, t0, n_treated, per, ensemble, p_value, level,
-                           treated_series, full_cf)
+                           treated_series, counterfactual)
 
 
 class _ScenarioGrid:
@@ -924,14 +1080,25 @@ class _EvalReport:
                    "interval includes zero.")
         lines.append(f"Headline (ensemble)         : {100*e['lift']:+.2f}% lift, "
                      f"{e['cumulative']:,.0f} cumulative incremental")
+        if "cum_lo" in e:
+            lines.append(f"Cumulative {cl}% CI          : "
+                         f"[{e['cum_lo']:,.0f}, {e['cum_hi']:,.0f}]  "
+                         f"(moving-block bootstrap, block_len-aware)")
         lines.append(verdict)
         lines.append("=" * 66)
         return "\n".join(lines)
 
     def plot(self, path: str | None = None):
-        """Render the evaluation figure (observed vs counterfactual, effect path,
-        and a lift-by-method bar). Returns the matplotlib Figure."""
+        """Render the evaluation figure (observed vs counterfactual, effect path
+        with CI band, and a lift-by-method bar). Returns the matplotlib Figure."""
         return _plot_eval(self, path)
+
+    def plot_effect_over_time(self, path: str | None = None):
+        """Render the effect-over-time figure: the **pointwise** effect across the
+        full timeline (pre-period included, as a placebo check) and the running
+        **cumulative** incremental, each as a point estimate with a confidence
+        band. Returns the matplotlib Figure."""
+        return _plot_eval_timeline(self, path)
 
     def __repr__(self):
         sig = "sig" if self.significant else "ns"
@@ -1362,13 +1529,18 @@ def _plot_eval(rep: "_EvalReport", path):
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best", framealpha=0.9, fontsize=9)
 
-    # ---- B: effect path over the post-period (ensemble + per method). ----
+    # ---- B: effect path over the post-period (ensemble + per method) + CI band.
     axb = fig.add_subplot(gs[1, 0])
     for m, r in rep.per.items():
         axb.plot(post, r["att_path"], color=_METHOD_COLORS.get(m, _PK_GREY),
                  lw=1.3, alpha=0.7, label=m)
-    axb.plot(post, rep.ensemble["att_path"], color=_PK_PURPLE, lw=2.6,
-             label="ENSEMBLE")
+    ens_post = rep.ensemble["att_path"]
+    p_lo = rep.ensemble.get("point_lo")
+    p_hi = rep.ensemble.get("point_hi")
+    if p_lo is not None:
+        axb.fill_between(post, p_lo, p_hi, color=_PK_PURPLE, alpha=0.18,
+                         label=f"ensemble {int(round(100*rep.level))}% band")
+    axb.plot(post, ens_post, color=_PK_PURPLE, lw=2.6, label="ENSEMBLE")
     axb.axhline(0, color="#111827", lw=1.0)
     axb.set_title("Effect over time (per-period ATT)", fontweight="bold")
     axb.set_xlabel("period")
@@ -1401,6 +1573,85 @@ def _plot_eval(rep: "_EvalReport", path):
     verdict = "significant" if rep.significant else "not significant"
     fig.suptitle(f"panelkit · test evaluation — ensemble lift "
                  f"{100*rep.ensemble['lift']:+.2f}% ({verdict}){pv}",
+                 fontsize=14, fontweight="bold", x=0.012, ha="left")
+    if path:
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def _plot_eval_timeline(rep: "_EvalReport", path):
+    """Pointwise + cumulative effect over the full timeline, with CI bands.
+
+    Bands come from a moving-block bootstrap of the pre-period residuals (so they
+    capture autocorrelation): the pointwise band is the per-period placebo spread
+    around the estimate; the cumulative band grows with horizon as the bootstrap
+    placebo cumulative-sums spread out."""
+    _, plt = _require_mpl()
+    import numpy as _np
+    from matplotlib.gridspec import GridSpec
+
+    T = len(rep.treated_series)
+    t0 = rep.t0
+    e = rep.ensemble
+    x = _np.arange(T)
+    seg = x[t0:]
+    gap = _np.asarray(e["full_gap"], dtype=float)
+    hw = e.get("point_hw", 0.0)
+    cl = int(round(100 * rep.level))
+
+    plt.rcParams.update({"font.size": 11, "axes.titlesize": 12})
+    fig = plt.figure(figsize=(12, 7.8))
+    fig.patch.set_facecolor("white")
+    gs = GridSpec(2, 1, figure=fig, height_ratios=[1.0, 1.0], hspace=0.32)
+
+    # ---- Top: pointwise effect (treated − counterfactual), full timeline. ----
+    ax = fig.add_subplot(gs[0])
+    ax.axvspan(-0.5, t0 - 0.5, color="#f3f4f6", alpha=0.8)
+    # Constant placebo band across the whole timeline (the pre-period sits inside
+    # it as a fit/placebo check); the per-period CI on the post effect is shown
+    # as a tighter band around the estimate.
+    ax.fill_between(x, gap - hw, gap + hw, color=_PK_PURPLE, alpha=0.12,
+                    label=f"{cl}% placebo band")
+    ax.fill_between(seg, e["point_lo"], e["point_hi"], color=_PK_PURPLE, alpha=0.22)
+    ax.plot(x, gap, color=_PK_PURPLE, lw=2.0, label="pointwise effect")
+    ax.axhline(0, color="#111827", lw=1.0)
+    ax.axvline(t0 - 0.5, color="#374151", lw=1.2, ls=":")
+    ax.annotate("pre-period (placebo)", (t0 / 2, ax.get_ylim()[1]), ha="center",
+                va="top", color="#6b7280", fontsize=9)
+    ax.annotate("test window", (t0 + (T - t0) / 2, ax.get_ylim()[1]), ha="center",
+                va="top", color="#6b21a8", fontsize=9)
+    ax.set_title("Pointwise effect over time (treated − counterfactual)",
+                 fontweight="bold")
+    ax.set_xlabel("period")
+    ax.set_ylabel("per-period effect")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="upper left", framealpha=0.9, fontsize=9)
+
+    # ---- Bottom: cumulative incremental over the test window (×n_treated). ----
+    axc = fig.add_subplot(gs[1])
+    cum = e["cum_curve"]
+    axc.axvspan(-0.5, t0 - 0.5, color="#f3f4f6", alpha=0.8)
+    axc.fill_between(seg, e["cum_lo_curve"], e["cum_hi_curve"], color=_PK_GREEN,
+                     alpha=0.15, label=f"{cl}% band (block bootstrap)")
+    axc.plot(seg, cum, color=_PK_GREEN, lw=2.4, label="cumulative incremental")
+    axc.axhline(0, color="#111827", lw=1.0)
+    axc.axvline(t0 - 0.5, color="#374151", lw=1.2, ls=":")
+    final = cum[-1]
+    axc.annotate(f"{final:,.0f}\n[{e['cum_lo']:,.0f}, {e['cum_hi']:,.0f}]",
+                 (T - 1, final), textcoords="offset points", xytext=(-6, 0),
+                 ha="right", va="center", fontweight="bold", color="#065f46", fontsize=9)
+    axc.set_title("Cumulative incremental effect over the test window",
+                  fontweight="bold")
+    axc.set_xlabel("period")
+    axc.set_ylabel("cumulative incremental")
+    axc.set_xlim(-0.5, T - 0.5)
+    axc.grid(True, alpha=0.25)
+    axc.legend(loc="upper left", framealpha=0.9, fontsize=9)
+
+    fig.suptitle(f"panelkit · effect over time — ensemble "
+                 f"{100*rep.ensemble['lift']:+.2f}% lift, "
+                 f"{rep.ensemble['cumulative']:,.0f} cumulative "
+                 f"[{e['cum_lo']:,.0f}, {e['cum_hi']:,.0f}]",
                  fontsize=14, fontweight="bold", x=0.012, ha="left")
     if path:
         fig.savefig(path, dpi=150, bbox_inches="tight")

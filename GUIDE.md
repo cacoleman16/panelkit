@@ -294,8 +294,9 @@ weighted-average **ensemble** estimate.
 
 ```python
 ev = design.evaluate(treated=["chicago", "denver"], treat_start=52, level=0.90)
-print(ev.summary())          # per-method + ensemble lift, CI, cumulative
-ev.plot("evaluate.png")      # observed-vs-counterfactual, effect path, lift bar
+print(ev.summary())               # per-method + ensemble lift, CI, cumulative
+ev.plot("evaluate.png")           # observed-vs-cf, effect path (CI band), lift bar
+ev.plot_effect_over_time("effect.png")  # pointwise + cumulative over time, w/ CIs
 ev.lift, ev.cumulative, ev.significant
 ```
 
@@ -307,6 +308,20 @@ from each method's bootstrap SE, `"equal"`, or an explicit dict/list). `ev` expo
 and the ensemble in `ev.ensemble`. Reported numbers: **% lift** (effect ÷
 counterfactual), **per-period ATT**, and **cumulative incremental** over the
 window (summed across treated markets).
+
+**Effect over time** (`ev.plot_effect_over_time(...)`) gives the event-study view:
+the **pointwise** effect across the full timeline — *including the pre-period*, so
+you can see it sits flat (centered on zero) inside the noise band before the test
+starts (a placebo check) and breaks out after — and the running **cumulative
+incremental**, each as a point estimate with a confidence band. The counterfactual
+is centered on the pre-period, so the gap shows fit quality rather than a level
+offset (SDID matches trends, not levels). The bands come from a **moving-block
+bootstrap** of the pre-period residuals: resampling whole blocks preserves their
+autocorrelation, so the intervals are more conservative than an iid normal
+approximation — the cumulative band in particular widens faster than √k when the
+residuals are positively autocorrelated. Raise `block_len` to capture longer-range
+dependence (wider, more conservative cumulative bands). Pass `exclude=[…]` to drop
+markets from the control pool (e.g. ones you don't trust as donors).
 
 ### Choosing a specification — `design.recommend(test_lengths, n_geos_options, target_lift, alphas=…)`
 
@@ -344,6 +359,16 @@ seasonality vs short history, tiny/huge holdout, too few donors). It also expose
 Searches candidate treatment-market sets and ranks them by power, MDE, pre-fit,
 holdout, and confidence. Pass `eligible=[…]` to restrict to markets you can
 actually run in.
+
+Two real-world controls for *which* markets the search may use:
+
+- **`include=[…]`** — force specific markets into **every** candidate treatment
+  set (must-treat markets, e.g. a flagship region you've already committed to).
+  The search fills the remaining slots from `eligible`, up to `max_treated`.
+- **`exclude=[…]`** — drop markets **entirely**: they're never treated *and*
+  never used as a donor/control (e.g. a market with contaminated data or its own
+  concurrent campaign). `exclude` is also accepted by `power()`, `diagnose()`,
+  `evaluate()`, and `recommend()` to keep a market out of the control pool.
 
 ### Multi-cell tests — `design.multi_cell(cells, test_len, …)`
 

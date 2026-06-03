@@ -170,6 +170,67 @@ def test_evaluate_validates_inputs():
         d.evaluate(treated=["M00"], treat_start=30, methods=["SC", "XYZ"])
 
 
+def test_evaluate_timeline_figure(tmp_path):
+    Y, names = geo_panel(n=16, t=60)
+    Yt = Y.copy()
+    Yt[0, 50:] *= 1.07
+    ev = GeoDesign(Yt, names=names).evaluate(treated=["M00"], treat_start=50)
+    e = ev.ensemble
+    # the timeline arrays are present and sensibly shaped
+    assert "full_gap" in e and len(e["full_gap"]) == 60
+    assert e["sigma_pre"] >= 0 and e["point_hw"] >= 0
+    # pre-period gap is centered (fit residual, not a level offset)
+    assert abs(float(np.mean(e["full_gap"][:50]))) < 1e-6
+    # cumulative CI present and the band grows with horizon (autocorrelation-aware)
+    assert "cum_lo" in e and e["cum_hi"] >= e["cum_lo"]
+    w0 = e["cum_hi_curve"][0] - e["cum_curve"][0]
+    wN = e["cum_hi_curve"][-1] - e["cum_curve"][-1]
+    assert wN >= w0
+    out = tmp_path / "tl.png"
+    ev.plot_effect_over_time(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_select_include_forces_markets():
+    Y, names = geo_panel(n=14)
+    d = GeoDesign(Y, names=names)
+    ranked = d.select_markets(test_len=10, target_lift=0.1, max_treated=3,
+                              n_candidates=30, include=["M05"], top=8)
+    assert ranked and all("M05" in c["markets"] for c in ranked)
+    assert all(len(c["markets"]) <= 3 for c in ranked)
+    # too many forced markets for the size budget
+    with pytest.raises(ValueError, match="max_treated"):
+        d.select_markets(test_len=10, target_lift=0.1, max_treated=2,
+                         include=["M00", "M01", "M02"])
+
+
+def test_select_exclude_drops_markets():
+    Y, names = geo_panel(n=14)
+    d = GeoDesign(Y, names=names)
+    ranked = d.select_markets(test_len=10, target_lift=0.1, max_treated=3,
+                              n_candidates=40, exclude=["M01", "M02"], top=10)
+    chosen = {m for c in ranked for m in c["markets"]}
+    assert "M01" not in chosen and "M02" not in chosen
+    # include + exclude conflict is rejected
+    with pytest.raises(ValueError, match="both include and exclude"):
+        d.select_markets(test_len=10, target_lift=0.1, max_treated=3,
+                         include=["M03"], exclude=["M03"])
+
+
+def test_power_and_evaluate_exclude():
+    Y, names = geo_panel(n=16, t=60)
+    d = GeoDesign(Y, names=names)
+    rep = d.power(treated=["M00"], test_len=8, lifts=[0.0, 0.1], exclude=["M05", "M06"])
+    assert "ENSEMBLE" in rep.results
+    with pytest.raises(ValueError, match="excluded"):
+        d.power(treated=["M00"], test_len=8, exclude=["M00"])
+    Yt = Y.copy()
+    Yt[0, 50:] *= 1.08
+    ev = GeoDesign(Yt, names=names).evaluate(treated=["M00"], treat_start=50,
+                                             exclude=["M07"])
+    assert ev.lift == ev.lift  # not NaN
+
+
 def test_unknown_market_raises():
     Y, names = geo_panel()
     d = GeoDesign(Y, names=names)
