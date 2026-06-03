@@ -300,10 +300,14 @@ ev.plot_effect_over_time("effect.png")  # pointwise + cumulative over time, w/ C
 ev.lift, ev.cumulative, ev.significant
 ```
 
-Inference is **in-space placebo** (Abadie): every donor market is refit as if it
-were the treated one, and the spread of *their* post-period effects is the null
-reference — capturing out-of-sample extrapolation error, the real source of
-uncertainty. (A bootstrap of the treated unit's own post-period only sees
+Inference defaults to **in-space placebo** (Abadie, `inference="placebo"`): every
+donor market is refit as if it were the treated one, and the spread of *their*
+post-period effects is the null reference — capturing out-of-sample extrapolation
+error, the real source of uncertainty. A second engine, `inference="bootstrap"`,
+uses a moving-block bootstrap of the pre-period residuals; it's serial-correlation
+aware and works as a **fallback when the donor pool is too small for placebo**, but
+it only sees in-sample noise, so it is *optimistic* (the report is flagged
+`optimistic` and you shouldn't lean on it for significance). (A bootstrap of the treated unit's own post-period only sees
 in-sample noise and is wildly anti-conservative — on null data its 90% interval
 falsely flags an effect ~50% of the time; the placebo version sits at/below the
 nominal 10%.) Poorly-fit placebos (pre-period RMSPE > 2× the treated unit's) are

@@ -206,6 +206,29 @@ def test_evaluate_dedups_treated_markets():
     assert a.lift == b.lift
 
 
+def test_evaluate_bootstrap_inference_option():
+    Y, names = geo_panel(n=30, t=60)
+    Yt = Y.copy()
+    Yt[0, 48:] *= 1.10
+    d = GeoDesign(Yt, names=names)
+    ev = d.evaluate(treated=["M00"], treat_start=48, inference="bootstrap")
+    e = ev.ensemble
+    assert e["inference"] == "block bootstrap"
+    assert e["optimistic"] is True
+    assert np.isfinite(e["att_lo"]) and np.isfinite(e["att_hi"])
+    assert "optimistic" in ev.summary().lower()
+    # bootstrap is a fallback where placebo is undefined (1 donor)
+    base = 100 + np.cumsum(np.random.default_rng(0).normal(size=40))
+    Y1 = np.vstack([base + 0.3 * np.random.default_rng(1).normal(size=40), base])
+    Y1[0, 30:] *= 1.15
+    g = GeoDesign(Y1, names=["t", "d"])
+    assert not np.isfinite(g.evaluate(treated=["t"], treat_start=30).ensemble["att_lo"])
+    assert np.isfinite(g.evaluate(treated=["t"], treat_start=30,
+                                  inference="bootstrap").ensemble["att_lo"])
+    with pytest.raises(ValueError, match="inference"):
+        d.evaluate(treated=["M00"], treat_start=48, inference="nope")
+
+
 def test_evaluate_validates_inputs():
     Y, names = geo_panel(n=8, t=40)
     d = GeoDesign(Y, names=names)
