@@ -336,8 +336,8 @@ class GeoDesign:
         """Power analysis for a specified treated-market set across methods.
 
         Powers over many historical placebo windows (sliding the test window
-        across history); ``lookback=k`` restricts to the most-recent ``k`` windows
-        (GeoLift-style), which are most representative of the upcoming test."""
+        across history); ``lookback=k`` restricts to the most-recent ``k`` windows,
+        which are most representative of the upcoming test."""
         idx = self._resolve(treated)
         names = [self.names[i] for i in idx]
         lifts = list(_DEFAULT_LIFTS if lifts is None else lifts)
@@ -392,7 +392,7 @@ class GeoDesign:
 
         ``exact_size=k`` restricts the search to sets of exactly ``k`` markets
         (otherwise sizes 1..``max_treated`` are considered). ``lookback=k`` powers
-        over the most-recent ``k`` historical windows (GeoLift-style)."""
+        over the most-recent ``k`` historical windows."""
         elig = self._resolve(eligible) if eligible is not None else list(range(self.n))
         ranked = _panelkit.geo_select(
             self.Y, elig, int(max_treated), int(test_len), float(target_lift),

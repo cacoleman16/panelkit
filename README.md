@@ -172,10 +172,10 @@ valid inference for each estimator.
 
 ## Geo test design (power analysis & market selection)
 
-`panelkit.design` is the planning layer in front of a geo experiment — a
-GeoLift-style toolkit, but multi-method and robustness-first, with the heavy
-simulation in Rust. It answers: **which markets should I treat, how big a lift
-can I detect, and can I trust this design?**
+`panelkit.design` is the planning layer in front of a geo experiment —
+multi-method and robustness-first, with the heavy simulation in Rust. It answers:
+**which markets should I treat, how big a lift can I detect, and can I trust this
+design?**
 
 ```python
 from panelkit.design import GeoDesign
@@ -223,7 +223,7 @@ strings → numeric (with a clear error on genuinely non-numeric values), dates
 rows aggregated with a warning, and a clear error (with a count) if the panel is
 gappy. You don't pre-clean dtypes.
 
-What it does that GeoLift doesn't, out of the box:
+What you get out of the box:
 
 - **Real-data power** — historical placebo with injected lift on your *actual*
   panel (not an assumed variance), across **SC, ASC, and SDID** with a

@@ -262,15 +262,14 @@ power at lift τ is the share of windows whose injected effect clears that
 threshold. So the estimate is averaged over **many** placebos — `result.n_windows`
 reports how many.
 
-**Relationship to GeoLift's `lookback_window`.** GeoLift's lookback is exactly
-this idea — how many recent test-start points to simulate over. By default
-panelkit uses *all* available windows (more placebo samples → a more stable power
-estimate). Pass `lookback=k` to use only the **most-recent k** windows: those have
-the longest pre-periods and reflect current dynamics, so they're the most
+**The `lookback` option — how far back to simulate.** By default panelkit powers
+over *all* valid windows (more placebo samples → a more stable power estimate).
+Pass `lookback=k` to use only the **most-recent k** windows: those have the
+longest pre-periods and reflect current dynamics, so they're the most
 representative of the test you're about to run — at the cost of fewer samples (a
 noisier estimate). It matters when older history is unrepresentative (regime
 change, growth, format changes) or when early windows have very short pre-periods;
-use a `lookback` covering your relevant recent history (e.g. the last ~6–12
+set `lookback` to cover your relevant recent history (e.g. the last ~6–12
 months of windows).
 
 ### Choosing a specification — `design.recommend(test_lengths, n_geos_options, target_lift, alphas=…)`
@@ -310,9 +309,10 @@ Searches candidate treatment-market sets and ranks them by power, MDE, pre-fit,
 holdout, and confidence. Pass `eligible=[…]` to restrict to markets you can
 actually run in.
 
-### What it adds over GeoLift
+### What the design layer gives you
 
-Multi-method (SC/ASC/SDID, not just augmented SCM), MDE in %/absolute/cumulative
-with CIs, an explicit confidence score + verdict, seasonality/stability/holdout
-guardrails with plain-English warnings, a specification-tradeoff sweep, and
-publication-clean figures out of the box.
+Multi-method power (SC/ASC/SDID with a recommended method, plus a naive-DiD
+baseline), MDE in %/absolute/cumulative with CIs, an explicit 0–100 confidence
+score + one-line verdict, seasonality/stability/holdout guardrails with
+plain-English warnings, a specification-tradeoff sweep, and publication-clean
+figures out of the box.

@@ -114,9 +114,9 @@ pub fn power_curve(
     );
     // Every valid sliding test-window start position is one historical placebo.
     // We power over MANY of them (the count is `n_windows`). `lookback`, when set,
-    // keeps only the most-recent K windows — GeoLift's "lookback_window": those
-    // are the most representative of the upcoming test (recent dynamics, longest
-    // pre-periods), at the cost of fewer placebo samples.
+    // keeps only the most-recent K windows: those are the most representative of
+    // the upcoming test (recent dynamics, longest pre-periods), at the cost of
+    // fewer placebo samples.
     let mut starts: Vec<usize> = (first..=(t - test_len)).collect();
     if let Some(k) = lookback {
         let k = k.max(1);

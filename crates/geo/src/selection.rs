@@ -50,8 +50,8 @@ pub struct SelectConfig {
     /// (used by the spec sweep so each "#geos" row reflects that size). If
     /// `None`, considers all sizes from 1 to `max_treated`.
     pub exact_size: Option<usize>,
-    /// Number of most-recent historical placebo windows to power over
-    /// (GeoLift's lookback). `None` = all available windows.
+    /// Number of most-recent historical placebo windows to power over.
+    /// `None` = all available windows.
     pub lookback: Option<usize>,
 }
 

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Geo-experiment design: power analysis, market selection, and real-world diagnostics for panelkit (GeoLift-style, but multi-method and robustness-first)."
+description = "Geo-experiment design: multi-method power analysis, market selection, and real-world diagnostics for panelkit."
 
 [features]
 default = []

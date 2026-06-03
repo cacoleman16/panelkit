@@ -1,4 +1,4 @@
-"""GeoLift-style geo test design with panelkit — power analysis, guardrails,
+"""Geo test design with panelkit — power analysis, guardrails,
 market selection, specification recommendations, and professional figures.
 
 Two synthetic panels are used:
