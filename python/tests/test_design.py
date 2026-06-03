@@ -143,22 +143,38 @@ def test_power_ensemble_present_and_weighted():
 
 
 def test_evaluate_recovers_injected_lift(tmp_path):
-    Y, names = geo_panel(n=20, t=72)
-    # inject a clean +8% lift on the well-fit market over the last 12 periods
+    # A realistic donor pool (~40 markets) so in-space placebo inference has power.
+    Y, names = geo_panel(n=40, t=72)
     Yt = Y.copy()
-    Yt[0, 60:] *= 1.08
+    Yt[0, 60:] *= 1.10                       # clear +10% lift on a well-fit market
     d = GeoDesign(Yt, names=names)
     ev = d.evaluate(treated=["M00"], treat_start=60, level=0.90)
     assert set(ev.per) == {"SC", "ASC", "SDID"}
-    # ensemble lift in the right ballpark and detected
-    assert 0.04 < ev.lift < 0.12
+    # ensemble lift recovered in the right ballpark and detected as significant
+    assert 0.05 < ev.lift < 0.15
     assert ev.significant
+    assert ev.ensemble["n_placebo"] > 0
     assert abs(sum(ev.ensemble["weights"].values()) - 1.0) < 1e-9
     s = ev.summary()
     assert "GEO TEST EVALUATION" in s and "ENSEMBLE" in s
     out = tmp_path / "eval.png"
     ev.plot(str(out))
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_evaluate_cis_are_calibrated_not_anticonservative():
+    # On NULL data (no real effect), a 90% interval must NOT routinely exclude
+    # zero. In-space placebo inference should be conservative (FP well under 0.10),
+    # never the 50%-ish false-positive rate of a naive post-period bootstrap.
+    nm = [f"M{i:02d}" for i in range(40)]
+    fp = 0
+    K = 20
+    for s in range(K):
+        Y, _ = geo_panel(n=40, t=60, seed=3000 + s)
+        ev = GeoDesign(Y, names=nm).evaluate(treated=["M00"], treat_start=48)
+        if ev.significant:
+            fp += 1
+    assert fp / K <= 0.20      # generous bound; true rate is near 0
 
 
 def test_evaluate_validates_inputs():

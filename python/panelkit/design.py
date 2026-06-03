@@ -52,26 +52,6 @@ def _ensemble_weight_arg(spec):
     return w
 
 
-def _placebo_paths(pre_gaps, length, block_len, n_reps, seed):
-    """Moving-block bootstrap of the (centered) pre-period residuals into placebo
-    paths of ``length`` periods. Resampling whole blocks preserves the residual
-    autocorrelation, so the resulting CI bands are more conservative than an iid
-    normal approximation. Returns an ``(n_reps, length)`` array (empty if no
-    pre-period or zero length)."""
-    g = np.asarray(pre_gaps, dtype=float)
-    m = len(g)
-    if m == 0 or length <= 0 or n_reps <= 0:
-        return np.empty((0, max(length, 0)))
-    g = g - g.mean()  # null is "no effect" → center the residuals
-    rng = np.random.default_rng(int(seed))
-    bl = max(1, min(int(block_len), m))
-    n_blocks = int(np.ceil(length / bl))
-    starts = rng.integers(0, m, size=(n_reps, n_blocks))
-    idx = (starts[:, :, None] + np.arange(bl)[None, None, :]) % m  # circular blocks
-    paths = g[idx].reshape(n_reps, n_blocks * bl)[:, :length]
-    return paths
-
-
 class _PowerReport:
     """Result of a power analysis across methods, with a report and plots."""
 
@@ -701,8 +681,7 @@ class GeoDesign:
         methods: Sequence[str] = _METHODS,
         weights="auto",
         level: float = 0.90,
-        n_boot: int = 2000,
-        block_len: int = 4,
+        max_placebo: int = 200,
         seed: int = 0,
         exclude=None,
     ) -> "_EvalReport":
@@ -711,9 +690,15 @@ class GeoDesign:
         This is the measurement counterpart to :meth:`power`: given the treated
         markets and the period treatment began (``treat_start``, the first
         post-period column), it fits SC / ASC / SDID, reports each one's effect,
-        and combines them into a weighted-average **ensemble** estimate. Each
-        estimate gets a confidence interval from a stationary block bootstrap of
-        its post-period effect path; an SC in-space placebo supplies a p-value.
+        and combines them into a weighted-average **ensemble** estimate.
+
+        Inference is **in-space placebo** (Abadie): every donor market is refit as
+        if it were the treated one, and the spread of *their* post-period effects
+        is the null reference. This captures out-of-sample extrapolation error —
+        the dominant source of uncertainty — so the intervals are calibrated
+        (unlike a bootstrap of the treated unit's own post-period, which only sees
+        in-sample noise and is far too narrow). Poorly-fit placebos (pre-period
+        RMSPE > 2× the treated unit's) are dropped, per Abadie.
 
         Parameters
         ----------
@@ -725,11 +710,13 @@ class GeoDesign:
             Which estimators to fit and blend.
         weights : "auto" | "equal" | dict
             Ensemble weighting. ``"auto"`` is inverse-variance (precision)
-            weighting from each method's bootstrap standard error.
+            weighting from each method's placebo-null spread.
         level : float
             Confidence level for the intervals (e.g. 0.90).
-        n_boot, block_len, seed :
-            Stationary-bootstrap settings for the effect-path CIs.
+        max_placebo : int
+            Cap on the number of donor placebos used (sampled if exceeded).
+        seed : int
+            Seed for placebo sampling when ``max_placebo`` is exceeded.
 
         Returns
         -------
@@ -745,7 +732,7 @@ class GeoDesign:
             if bad:
                 raise ValueError(f"treated markets were also excluded: {bad}")
             return sub.evaluate(tnames, treat_start, methods=methods, weights=weights,
-                                level=level, n_boot=n_boot, block_len=block_len, seed=seed)
+                                level=level, max_placebo=max_placebo, seed=seed)
         idx = self._resolve(treated)
         names = [self.names[i] for i in idx]
         t0 = int(treat_start)
@@ -757,27 +744,28 @@ class GeoDesign:
         if unknown:
             raise ValueError(f"unknown methods {unknown}; choose from {_METHODS}")
 
-        fitters = {
-            "SC": lambda: _panelkit.fit_sc(self.Y, idx, t0, 0.0, False, level),
-            "ASC": lambda: _panelkit.fit_asc(self.Y, idx, t0, 0.0, None),
-            "SDID": lambda: _panelkit.fit_sdid(self.Y, idx, t0, 1.0),
-        }
+        def _fit(method, tr):
+            if method == "SC":
+                return _panelkit.fit_sc(self.Y, tr, t0, 0.0, False, level)
+            if method == "ASC":
+                return _panelkit.fit_asc(self.Y, tr, t0, 0.0, None)
+            return _panelkit.fit_sdid(self.Y, tr, t0, 1.0)
+
         treated_series = self.Y[idx].mean(axis=0)
+        post_len = self.t - t0
+        order = methods
+
+        # --- point estimates on the treated set ---
         per = {}
         for m in methods:
-            fit = fitters[m]()
+            fit = _fit(m, idx)
             att_path = np.asarray(fit.att_path, dtype=float)
             cf = np.asarray(fit.counterfactual, dtype=float)
             att = float(fit.att)
             cf_mean = float(np.mean(cf)) if cf.size else float("nan")
-            se, lo, hi = _panelkit.bootstrap_mean(
-                att_path.tolist(), "stationary", int(block_len), int(n_boot),
-                int(seed), float(level))
-            # Full-timeline counterfactual via donor weights (exact for SC; the
-            # dominant term for ASC/SDID). Center on the pre-period so the gap
-            # reflects FIT, not a level offset — SDID is level-agnostic (matches
-            # trends, not levels), so its donor-weighted series sits at a constant
-            # offset that would otherwise look like a non-zero pre-period.
+            # Full-timeline counterfactual via donor weights, centered on the
+            # pre-period so the gap reflects FIT, not a level offset (SDID matches
+            # trends, not levels).
             dids = np.asarray(fit.donor_ids, dtype=int)
             ws = np.asarray(fit.weights, dtype=float)
             if dids.size:
@@ -787,21 +775,35 @@ class GeoDesign:
                 full_cf = np.full(self.t, np.nan)
             per[m] = {
                 "att": att, "att_path": att_path, "counterfactual": cf,
-                "full_cf": full_cf,
-                "cf_mean": cf_mean, "lift": att / cf_mean if cf_mean else float("nan"),
-                "se": se, "att_lo": lo, "att_hi": hi,
-                "lift_lo": lo / cf_mean if cf_mean else float("nan"),
-                "lift_hi": hi / cf_mean if cf_mean else float("nan"),
+                "full_cf": full_cf, "cf_mean": cf_mean,
+                "lift": att / cf_mean if cf_mean else float("nan"),
                 "cumulative": float(att_path.sum()) * n_treated,
                 "pre_rmspe": float(fit.pre_rmspe),
             }
 
-        # Ensemble: weight-average the post-period effect paths, then summarize.
-        order = methods
+        # --- in-space placebo: refit each donor as if it were treated ---
+        treated_set = set(idx)
+        donors = [u for u in range(self.n) if u not in treated_set]
+        if len(donors) > int(max_placebo):
+            rng = np.random.default_rng(int(seed))
+            donors = sorted(int(j) for j in rng.choice(donors, int(max_placebo), replace=False))
+        pb = {m: [] for m in methods}        # per method: list of (att_path, pre_rmspe)
+        for j in donors:
+            for m in methods:
+                fj = _fit(m, [j])
+                pb[m].append((np.asarray(fj.att_path, dtype=float), float(fj.pre_rmspe)))
+
+        # --- ensemble weights ---
+        def _placebo_att_sd(m):
+            if not pb[m]:
+                return 1.0
+            vals = np.array([p.mean() for (p, _) in pb[m]])
+            return float(np.std(vals)) if len(vals) > 1 else 1.0
         if isinstance(weights, str) and weights.lower() == "equal":
             wv = [1.0 / len(order)] * len(order)
         elif isinstance(weights, str) and weights.lower() == "auto":
-            prec = [1.0 / max(per[m]["se"] ** 2, 1e-300) for m in order]
+            # inverse-variance from each method's placebo-null spread (precision)
+            prec = [1.0 / max(_placebo_att_sd(m) ** 2, 1e-300) for m in order]
             s = sum(prec)
             wv = [p / s for p in prec] if s > 0 else [1.0 / len(order)] * len(order)
         elif isinstance(weights, dict):
@@ -817,71 +819,88 @@ class GeoDesign:
             s = sum(raw)
             wv = [r / s for r in raw]
         wmap = dict(zip(order, wv))
+        a = (1.0 - float(level)) / 2.0
 
+        def _ci(point, null_samples):
+            """Pivot CI: point estimate ± the placebo null spread (null ≈ 0)."""
+            if len(null_samples) >= 2:
+                return point + float(np.quantile(null_samples, a)), \
+                    point + float(np.quantile(null_samples, 1.0 - a))
+            return point, point
+
+        # --- per-method point CIs from each method's placebo att spread ---
+        for m in order:
+            mp = np.array([p.mean() for (p, _) in pb[m]]) if pb[m] else np.array([])
+            lo, hi = _ci(per[m]["att"], mp)
+            cfm = per[m]["cf_mean"]
+            per[m]["att_lo"], per[m]["att_hi"] = lo, hi
+            per[m]["lift_lo"] = lo / cfm if cfm else float("nan")
+            per[m]["lift_hi"] = hi / cfm if cfm else float("nan")
+
+        # --- ensemble estimate + ensemble placebo paths (Abadie pre-fit filter) ---
         ens_path = sum(wmap[m] * per[m]["att_path"] for m in order)
         ens_cf_mean = float(sum(wmap[m] * per[m]["cf_mean"] for m in order))
         ens_att = float(ens_path.mean())
-        se, lo, hi = _panelkit.bootstrap_mean(
-            ens_path.tolist(), "stationary", int(block_len), int(n_boot),
-            int(seed), float(level))
+        treated_pre = sum(wmap[m] * per[m]["pre_rmspe"] for m in order)
+
+        ens_pb = []  # (path, pre_rmspe)
+        for di in range(len(donors)):
+            path = sum(wmap[m] * pb[m][di][0] for m in order)
+            pre = sum(wmap[m] * pb[m][di][1] for m in order)
+            ens_pb.append((path, pre))
+        kept = [p for (p, pre) in ens_pb if treated_pre <= 0 or pre <= 2.0 * treated_pre]
+        if len(kept) < 5:                      # too few comparable placebos → use all
+            kept = [p for (p, _) in ens_pb]
+        pb_mat = np.array(kept) if kept else np.zeros((0, post_len))
+        n_pb = pb_mat.shape[0]
+
+        # pointwise + cumulative + mean CIs, all from the placebo null
+        if n_pb >= 2:
+            point_lo = ens_path + np.quantile(pb_mat, a, axis=0)
+            point_hi = ens_path + np.quantile(pb_mat, 1.0 - a, axis=0)
+            point_hw = float(np.quantile(np.abs(pb_mat), float(level)))
+            cum_pb = np.cumsum(pb_mat, axis=1)
+            run = np.cumsum(ens_path)
+            cum_lo_band = np.quantile(cum_pb, a, axis=0)
+            cum_hi_band = np.quantile(cum_pb, 1.0 - a, axis=0)
+            pb_att = pb_mat.mean(axis=1)
+            p_value = float((1.0 + np.sum(np.abs(pb_att) >= abs(ens_att))) / (1.0 + n_pb))
+        else:
+            point_lo = point_hi = ens_path.copy()
+            point_hw = 0.0
+            run = np.cumsum(ens_path)
+            cum_lo_band = cum_hi_band = np.zeros(post_len)
+            pb_att = np.array([])
+            p_value = None
+        att_lo, att_hi = _ci(ens_att, pb_att)
+
+        cum_curve = run * n_treated
         ensemble = {
-            "att": ens_att, "att_path": ens_path, "se": se,
-            "att_lo": lo, "att_hi": hi,
+            "att": ens_att, "att_path": ens_path,
+            "att_lo": att_lo, "att_hi": att_hi,
             "lift": ens_att / ens_cf_mean if ens_cf_mean else float("nan"),
-            "lift_lo": lo / ens_cf_mean if ens_cf_mean else float("nan"),
-            "lift_hi": hi / ens_cf_mean if ens_cf_mean else float("nan"),
+            "lift_lo": att_lo / ens_cf_mean if ens_cf_mean else float("nan"),
+            "lift_hi": att_hi / ens_cf_mean if ens_cf_mean else float("nan"),
             "cumulative": float(ens_path.sum()) * n_treated,
-            "weights": wmap,
+            "weights": wmap, "n_placebo": n_pb,
         }
 
-        # Significance: SC in-space placebo p-value.
-        sc = _panelkit.fit_sc(self.Y, idx, t0, 0.0, True, level)
-        p_value = sc.p_value
-
-        # Full-timeline ensemble counterfactual + gap path (pre-period shows fit,
-        # post-period uses the exact ensemble effect).
+        # full-timeline counterfactual + gap path (pre shows fit; post = effect)
         ens_full_cf = sum(wmap[m] * per[m]["full_cf"] for m in order)
         full_gap = treated_series - ens_full_cf
-        full_gap[t0:] = ens_path                       # exact ensemble post effect
-        counterfactual = treated_series - full_gap     # consistent everywhere
-        pre_gaps = full_gap[:t0]
-        sigma_pre = float(np.std(pre_gaps, ddof=1)) if t0 > 1 else float(np.std(pre_gaps))
-
-        # CI bands from a MOVING-BLOCK BOOTSTRAP of the pre-period residuals.
-        # Blocks preserve autocorrelation, so the bands are more conservative than
-        # an iid normal approximation — especially the cumulative band, whose
-        # spread grows faster than sqrt(k) under positive autocorrelation.
-        post_len = self.t - t0
-        a = (1.0 - float(level)) / 2.0
-        paths = _placebo_paths(pre_gaps, post_len, int(block_len), int(n_boot), int(seed))
-        if paths.size:
-            point_lo = np.quantile(paths, a, axis=0)
-            point_hi = np.quantile(paths, 1.0 - a, axis=0)
-            point_hw = float(np.quantile(np.abs(paths), float(level)))  # symmetric, full-timeline
-            cum_paths = np.cumsum(paths, axis=1)
-            cum_band_lo = np.quantile(cum_paths, a, axis=0)
-            cum_band_hi = np.quantile(cum_paths, 1.0 - a, axis=0)
-        else:
-            point_lo = point_hi = np.zeros(post_len)
-            point_hw = 0.0
-            cum_band_lo = cum_band_hi = np.zeros(post_len)
-
-        ens_post = ens_path
-        run = np.cumsum(ens_post)
-        cum_curve = run * n_treated
-        cum_lo_curve = (run + cum_band_lo) * n_treated
-        cum_hi_curve = (run + cum_band_hi) * n_treated
-
-        ensemble["sigma_pre"] = sigma_pre
+        full_gap[t0:] = ens_path
+        counterfactual = treated_series - full_gap
         ensemble["full_gap"] = full_gap
-        ensemble["point_hw"] = point_hw                       # constant pointwise half-width
-        ensemble["point_lo"] = ens_post + point_lo            # per-period CI on the effect
-        ensemble["point_hi"] = ens_post + point_hi
-        ensemble["cum_curve"] = cum_curve                     # cumulative incremental path
-        ensemble["cum_lo_curve"] = cum_lo_curve
-        ensemble["cum_hi_curve"] = cum_hi_curve
-        ensemble["cum_lo"] = float(cum_lo_curve[-1]) if post_len else float("nan")
-        ensemble["cum_hi"] = float(cum_hi_curve[-1]) if post_len else float("nan")
+        ensemble["sigma_pre"] = (float(np.std(full_gap[:t0], ddof=1)) if t0 > 1
+                                 else float(np.std(full_gap[:t0])))
+        ensemble["point_hw"] = point_hw
+        ensemble["point_lo"] = point_lo
+        ensemble["point_hi"] = point_hi
+        ensemble["cum_curve"] = cum_curve
+        ensemble["cum_lo_curve"] = (run + cum_lo_band) * n_treated
+        ensemble["cum_hi_curve"] = (run + cum_hi_band) * n_treated
+        ensemble["cum_lo"] = float(ensemble["cum_lo_curve"][-1]) if post_len else float("nan")
+        ensemble["cum_hi"] = float(ensemble["cum_hi_curve"][-1]) if post_len else float("nan")
 
         return _EvalReport(names, t0, n_treated, per, ensemble, p_value, level,
                            treated_series, counterfactual)
@@ -1083,7 +1102,7 @@ class _EvalReport:
         if "cum_lo" in e:
             lines.append(f"Cumulative {cl}% CI          : "
                          f"[{e['cum_lo']:,.0f}, {e['cum_hi']:,.0f}]  "
-                         f"(moving-block bootstrap, block_len-aware)")
+                         f"(in-space placebo, {e.get('n_placebo', 0)} donors)")
         lines.append(verdict)
         lines.append("=" * 66)
         return "\n".join(lines)
@@ -1582,10 +1601,10 @@ def _plot_eval(rep: "_EvalReport", path):
 def _plot_eval_timeline(rep: "_EvalReport", path):
     """Pointwise + cumulative effect over the full timeline, with CI bands.
 
-    Bands come from a moving-block bootstrap of the pre-period residuals (so they
-    capture autocorrelation): the pointwise band is the per-period placebo spread
-    around the estimate; the cumulative band grows with horizon as the bootstrap
-    placebo cumulative-sums spread out."""
+    Bands come from the in-space placebo distribution (every donor refit as if
+    treated): the pointwise band is the per-period placebo spread around the
+    estimate; the cumulative band grows with horizon as the placebo
+    cumulative-sums spread out."""
     _, plt = _require_mpl()
     import numpy as _np
     from matplotlib.gridspec import GridSpec
@@ -1632,7 +1651,7 @@ def _plot_eval_timeline(rep: "_EvalReport", path):
     cum = e["cum_curve"]
     axc.axvspan(-0.5, t0 - 0.5, color="#f3f4f6", alpha=0.8)
     axc.fill_between(seg, e["cum_lo_curve"], e["cum_hi_curve"], color=_PK_GREEN,
-                     alpha=0.15, label=f"{cl}% band (block bootstrap)")
+                     alpha=0.15, label=f"{cl}% band (in-space placebo)")
     axc.plot(seg, cum, color=_PK_GREEN, lw=2.4, label="cumulative incremental")
     axc.axhline(0, color="#111827", lw=1.0)
     axc.axvline(t0 - 0.5, color="#374151", lw=1.2, ls=":")
