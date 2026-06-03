@@ -53,14 +53,13 @@ pub fn multiplier_bootstrap(
 }
 
 /// Jackknife (leave-one-out) standard error from a set of leave-one-out
-/// estimates and the full-sample estimate.
-pub fn jackknife_se(loo_estimates: &[f64], full: f64) -> f64 {
+/// estimates: `sqrt((n-1)/n · Σ(θ_i − θ̄)²)`, centered on the LOO mean.
+pub fn jackknife_se(loo_estimates: &[f64]) -> f64 {
     let n = loo_estimates.len();
     if n < 2 {
         return 0.0;
     }
     let mean = loo_estimates.iter().sum::<f64>() / n as f64;
-    let _ = full;
     let ss: f64 = loo_estimates.iter().map(|x| (x - mean).powi(2)).sum();
     ((n as f64 - 1.0) / n as f64 * ss).sqrt()
 }
