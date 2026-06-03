@@ -191,6 +191,7 @@ def geo_select(
     seed: int = ...,
     exact_size: Optional[int] = ...,
     lookback: Optional[int] = ...,
+    include: Optional[Sequence[int]] = ...,
 ) -> list[MarketCandidate]: ...
 def fit_callaway_py(
     y: npt.NDArray[np.float64],

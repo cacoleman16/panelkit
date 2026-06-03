@@ -34,7 +34,10 @@ pub struct MarketCandidate {
 pub struct SelectConfig {
     /// Units eligible to be treated (e.g. markets you could actually run in).
     pub eligible: Vec<usize>,
-    /// Maximum number of treated markets in a candidate set.
+    /// Units **forced into every** candidate treatment set (must-treat markets).
+    /// The search fills the remaining slots from `eligible`. Empty = no forcing.
+    pub include: Vec<usize>,
+    /// Maximum number of treated markets in a candidate set (counts `include`).
     pub max_treated: usize,
     pub test_len: usize,
     /// The lift you care about detecting (fraction, e.g. 0.05 = 5%).
@@ -95,46 +98,91 @@ pub fn evaluate(y: &Mat, treated: &[usize], cfg: &SelectConfig) -> MarketCandida
     }
 }
 
-/// Build the candidate list. With `exact_size = Some(k)`, every candidate has
-/// exactly `k` markets; otherwise it's every singleton plus sampled subsets of
-/// size 2..=max_treated.
+/// Build the candidate list. Every candidate always contains the forced
+/// `include` markets; the remaining slots are drawn from `eligible` (minus the
+/// forced ones). With `exact_size = Some(k)`, every candidate has exactly `k`
+/// markets total; otherwise it's the forced set plus each single extra market
+/// plus sampled larger subsets up to `max_treated`.
 fn candidate_sets(cfg: &SelectConfig) -> Vec<Vec<usize>> {
     let mut rng = Xoshiro256pp::seed_from_u64(cfg.seed);
-    let mut seen = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
     let mut sets: Vec<Vec<usize>> = Vec::new();
 
-    if let Some(k) = cfg.exact_size {
-        let k = k.min(cfg.eligible.len()).max(1);
-        if k == 1 {
-            return cfg.eligible.iter().map(|&u| vec![u]).collect();
+    // Forced (must-treat) markets, de-duplicated, and the pool of extra picks.
+    let mut forced: Vec<usize> = cfg.include.clone();
+    forced.sort_unstable();
+    forced.dedup();
+    let forced_set: std::collections::HashSet<usize> = forced.iter().copied().collect();
+    let extra_pool: Vec<usize> = cfg
+        .eligible
+        .iter()
+        .copied()
+        .filter(|u| !forced_set.contains(u))
+        .collect();
+
+    if let Some(k0) = cfg.exact_size {
+        let k = k0.max(1);
+        let need = k.saturating_sub(forced.len());
+        if need == 0 {
+            // The forced set already fills the requested size.
+            if !forced.is_empty() {
+                sets.push(forced.clone());
+            }
+            return sets;
+        }
+        if need == 1 {
+            // Deterministic: forced + each eligible single (preserves the old
+            // "all singletons" behavior when nothing is forced and k == 1).
+            for &u in &extra_pool {
+                let mut pick = forced.clone();
+                pick.push(u);
+                pick.sort_unstable();
+                if seen.insert(pick.clone()) {
+                    sets.push(pick);
+                }
+            }
+            return sets;
         }
         let mut attempts = 0;
         while sets.len() < cfg.n_candidates && attempts < cfg.n_candidates * 40 {
             attempts += 1;
-            let mut pool = cfg.eligible.clone();
+            let mut pool = extra_pool.clone();
             rng.shuffle(&mut pool);
-            let mut pick: Vec<usize> = pool.into_iter().take(k).collect();
+            let mut pick: Vec<usize> = forced.clone();
+            pick.extend(pool.into_iter().take(need));
             pick.sort_unstable();
-            if seen.insert(pick.clone()) {
+            if pick.len() == k && seen.insert(pick.clone()) {
                 sets.push(pick);
             }
         }
         return sets;
     }
 
-    // Mixed-size search: all singletons + sampled subsets of size 2..=max_treated.
-    sets = cfg.eligible.iter().map(|&u| vec![u]).collect();
-    if cfg.max_treated >= 2 && cfg.eligible.len() >= 2 {
-        for s in &sets {
-            seen.insert(s.clone());
+    // Mixed-size search. Extra slots available on top of the forced set.
+    let budget = cfg.max_treated.saturating_sub(forced.len());
+    if !forced.is_empty() {
+        seen.insert(forced.clone());
+        sets.push(forced.clone());
+    }
+    if budget >= 1 {
+        for &u in &extra_pool {
+            let mut pick = forced.clone();
+            pick.push(u);
+            pick.sort_unstable();
+            if seen.insert(pick.clone()) {
+                sets.push(pick);
+            }
         }
+    }
+    if budget >= 2 && extra_pool.len() >= 2 {
         let mut attempts = 0;
         while sets.len() < cfg.n_candidates && attempts < cfg.n_candidates * 20 {
             attempts += 1;
-            let size = 2 + rng.gen_range(cfg.max_treated - 1); // 2..=max_treated
-            let mut pool = cfg.eligible.clone();
+            let extra = 2 + rng.gen_range(budget - 1); // 2..=budget extra markets
+            let mut pool = extra_pool.clone();
             rng.shuffle(&mut pool);
-            let mut pick: Vec<usize> = pool.into_iter().take(size).collect();
+            let mut pick: Vec<usize> = forced.clone();
+            pick.extend(pool.into_iter().take(extra));
             pick.sort_unstable();
             if seen.insert(pick.clone()) {
                 sets.push(pick);

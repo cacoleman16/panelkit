@@ -169,7 +169,7 @@ pub fn geo_diagnostics(
 
 /// Search and rank candidate treatment-market sets.
 #[pyfunction]
-#[pyo3(signature = (y, eligible, max_treated, test_len, target_lift, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, n_candidates=200, seed=0, exact_size=None, lookback=None))]
+#[pyo3(signature = (y, eligible, max_treated, test_len, target_lift, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, n_candidates=200, seed=0, exact_size=None, lookback=None, include=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn geo_select(
     py: Python<'_>,
@@ -186,6 +186,7 @@ pub fn geo_select(
     seed: u64,
     exact_size: Option<usize>,
     lookback: Option<usize>,
+    include: Option<Vec<usize>>,
 ) -> PyResult<Vec<PyMarketCandidate>> {
     let m = parse_method(method)?;
     let mat = mat_from_numpy(&y);
@@ -196,6 +197,7 @@ pub fn geo_select(
     };
     let cfg = SelectConfig {
         eligible,
+        include: include.unwrap_or_default(),
         max_treated,
         test_len,
         target_lift,

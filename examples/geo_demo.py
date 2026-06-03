@@ -133,6 +133,17 @@ print("\n" + ev.summary())
 print(f"\n(ground truth was +6.0%; ensemble recovered {100*ev.lift:+.2f}%)")
 ev.plot("assets/geo_evaluate.png")
 print("wrote assets/geo_evaluate.png")
+ev.plot_effect_over_time("assets/geo_effect_over_time.png")
+print("wrote assets/geo_effect_over_time.png")
+
+# Pin in must-have markets and drop ones you don't trust as controls:
+forced = treated[:1]
+ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3,
+                               include=forced, exclude=[design.names[-1]], top=3)
+print(f"\nselect_markets(include={forced}, exclude=['{design.names[-1]}']):")
+for c in ranked:
+    print(f"   {', '.join(c['markets']):<28} score={c['score']:.3f}  "
+          f"(forced market present: {forced[0] in c['markets']})")
 
 # ===========================================================================
 # 6) Robust DataFrame ingest: messy dtypes are handled.

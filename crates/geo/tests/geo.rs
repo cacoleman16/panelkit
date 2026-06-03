@@ -114,6 +114,7 @@ fn market_selection_ranks_candidates() {
     let y = geo_panel(12, 60, 5);
     let cfg = SelectConfig {
         eligible: (0..12).collect(),
+        include: vec![],
         max_treated: 3,
         test_len: 10,
         target_lift: 0.10,
@@ -139,6 +140,15 @@ fn market_selection_ranks_candidates() {
     };
     let ranked2 = select_markets(&y, &cfg2);
     assert!(ranked2.iter().all(|c| c.treated.len() == 2));
+    // include: market 5 is forced into every candidate set.
+    let cfg3 = SelectConfig {
+        include: vec![5],
+        ..cfg.clone()
+    };
+    let ranked3 = select_markets(&y, &cfg3);
+    assert!(!ranked3.is_empty());
+    assert!(ranked3.iter().all(|c| c.treated.contains(&5)));
+    assert!(ranked3.iter().all(|c| c.treated.len() <= 3));
     // Every candidate has a valid holdout and confidence.
     for c in &ranked {
         assert!(c.holdout_pct > 0.0 && c.holdout_pct < 1.0);
