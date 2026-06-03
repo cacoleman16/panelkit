@@ -52,3 +52,12 @@ def test_mcnnm_truncated_svd_recovers_effect():
     full = MCNNM(lambda_=1.0).fit(y, treated=[0], treat_time=t0).att
     fast = MCNNM(lambda_=1.0, max_rank=6).fit(y, treated=[0], treat_time=t0).att
     assert abs(fast - full) < 0.5
+
+
+def test_fit_mcnnm_lambda_keyword_usable():
+    # Regression: the raw binding's penalty arg must be usable as a Python
+    # keyword (`lambda_`, not the reserved word `lambda`).
+    from panelkit import _panelkit
+    y, t0 = factor_panel(3.0, seed=2)
+    r = _panelkit.fit_mcnnm(y, [0], int(t0), lambda_=1.0)
+    assert r.att == r.att  # not NaN; call succeeded with the keyword

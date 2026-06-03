@@ -87,6 +87,10 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: SdidConfig) -> ScFit {
     let t = panel.n_periods();
     let t_pre = t0;
     let t_post = t - t0;
+    assert!(
+        t_pre >= 1 && t_post >= 1,
+        "SDID needs at least one pre- and one post-period (t0 in 1..n_periods)"
+    );
     let n_tr = treated.len();
 
     // Treated-average series.
