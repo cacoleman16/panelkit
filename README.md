@@ -28,15 +28,52 @@ pip install maturin numpy
 maturin develop --release --manifest-path crates/pypanelkit/Cargo.toml
 ```
 
-## Data model
+## Data model — what your data should look like
 
-Every estimator takes an `N × T` NumPy array `Y` (rows = units, columns = time
-periods). Treatment is specified one of two ways:
+Every estimator takes a single **`N × T` NumPy array `Y`**: one row per unit
+(store, region, DMA, country…), one column per time period (week, month…), in
+chronological order. `Y[i, t]` is the outcome for unit `i` at period `t`. The
+panel must be **balanced** (no missing cells) — fill or aggregate gaps before
+fitting. Treatment timing is passed separately, not encoded in `Y`.
 
-- **Block treatment** (SC family, MC-NNM, CP-ASC): a list of `treated` unit
-  indices and the `treat_time` (first post-treatment column).
-- **Staggered adoption** (DiD family): a per-unit `treat_start` array giving each
-  unit's first-treated period; use `-1` or `None` for never-treated units.
+```python
+import numpy as np
+
+#            t=0    t=1    t=2    t=3    t=4    t=5   ...   (periods →)
+Y = np.array([
+    [102.0, 104.0, 101.0, 130.0, 133.0, 131.0],   # unit 0  ← treated
+    [ 98.0,  99.0,  97.0,  98.0, 100.0,  99.0],    # unit 1  (control/donor)
+    [201.0, 205.0, 199.0, 204.0, 206.0, 203.0],    # unit 2  (control/donor)
+    # ... one row per unit ...
+])
+# Here T=6 periods; say treatment starts at period 3 (so periods 0–2 are
+# "pre", periods 3–5 are "post"). Unit 0 jumps ~+30 post-treatment.
+```
+
+Two ways to declare treatment:
+
+- **Block treatment** (SC family, MC-NNM, CP-ASC) — a list of treated unit
+  indices and the first post-treatment column:
+  ```python
+  SyntheticControl().fit(Y, treated=[0], treat_time=3)
+  ```
+- **Staggered adoption** (DiD family) — a per-unit `treat_start` array giving
+  each unit's first-treated period; `-1` (or `None`) means never-treated:
+  ```python
+  # unit 0 treated at t=3, unit 2 at t=4, unit 1 never treated
+  CallawaySantAnna().fit(Y, treat_start=[3, -1, 4])
+  ```
+
+**Coming from a long/tidy DataFrame** (`unit, period, outcome` rows)? Pivot to
+the matrix first:
+```python
+Y = df.pivot(index="unit", columns="period", values="outcome").to_numpy()
+```
+
+Common gotchas: rows must be units and columns periods (not transposed);
+periods must be in time order; the array is `float64` (panelkit copies/converts
+as needed); and at least a couple of pre-treatment periods are required (more is
+better — SC/SDID lean on pre-treatment fit).
 
 ## Estimators at a glance
 
@@ -162,16 +199,77 @@ fit per donor (here 200), multithreaded:
 
 ![panelkit vs reference wall-clock](assets/bench_speedup.png)
 
+The constrained-weight estimators (SC, ASC, **SDID**) all beat the SLSQP
+reference — SDID most of all, since it solves *two* constrained weight problems
+per fit:
+
+![per-fit time by estimator](assets/bench_methods.png)
+
 | task (200 × 130 panel) | panelkit | NumPy + SciPy-SLSQP | speedup |
 |------|---------:|--------------------:|--------:|
-| single SC fit | ~2.0 ms | ~120 ms | ~60× |
-| full placebo (200 fits) | ~0.056 s | ~82 s | ~1467× |
+| single SC fit | ~2.0 ms | ~125 ms | **~60×** |
+| single ASC fit | ~2.7 ms | ~127 ms | **~46×** |
+| single SDID fit | ~11 ms | ~1576 ms | **~139×** |
+| full placebo (200 fits) | ~0.056 s | ~82 s | **~1467×** |
 
 Estimates are identical (ATT |Δ| ≈ 1e-11; same placebo p-value) — this is pure
 implementation speed, not an approximation. panelkit is also far steadier: SciPy
 SLSQP has occasional convergence cliffs on near-collinear donor panels (one took
-9.5 s in testing), which is why the table reports the median typical case. See
-[BENCHMARKS.md](BENCHMARKS.md).
+9.5 s in testing), which is why the table reports the median typical case.
+
+**The honest exception — MC-NNM.** Matrix completion's bottleneck is the SVD,
+and there our hand-written one-sided Jacobi SVD is **~20× slower** than NumPy's
+`np.linalg.svd` (≈112 ms vs ≈5 ms per fit at N=200). NumPy calls **LAPACK** —
+decades of hand-tuned, vendor-optimized assembly that a from-scratch SVD won't
+beat. We keep MC-NNM self-contained rather than fast; if you need it at scale, a
+LAPACK-backed SVD is the lever. See [BENCHMARKS.md](BENCHMARKS.md).
+
+### How the speed happens — Frank–Wolfe vs SLSQP, in plain English
+
+Synthetic control picks donor weights that (a) are non-negative and (b) sum to 1
+— a *simplex-constrained* least-squares problem. Two ways to solve it:
+
+- **SLSQP** (what the SciPy reference uses) is a general-purpose constrained
+  optimizer: it handles arbitrary nonlinear objectives and constraints by
+  repeatedly solving quadratic sub-problems and doing line searches. Powerful and
+  general — but it pays for that generality with overhead, and it can stall
+  (those convergence cliffs) when the donor columns are nearly collinear.
+- **Frank–Wolfe** (what panelkit uses) is purpose-built for exactly this shape.
+  Each step it asks one cheap question — "which single donor most improves the
+  fit right now?" — moves toward that donor, and (in our *away-step* variant)
+  can also pull weight *off* a donor that's hurting. No matrix inverses, no
+  general constraint machinery; every step stays on the simplex by construction.
+
+  - **Pros:** very fast per step, naturally produces sparse interpretable
+    weights, no convergence cliffs, and the same routine powers SC, ASC, and both
+    of SDID's weight problems.
+    - **Cons:** it's specialized — it only solves this convex constrained shape,
+      not arbitrary optimization. (For the one problem that *isn't* this shape —
+      MC-NNM's SVD — we don't have a tuned-assembly equivalent, hence the
+      exception above.)
+
+That trade — a specialized solver where the problem is regular, honest about the
+one place a general tuned library wins — is the whole performance story.
+
+### Monte Carlo, power analysis & robustness sweeps
+
+Running an estimator across thousands of simulated panels is the common heavy
+workload (power curves, robustness checks). `fit_many` does the whole loop in
+Rust across all cores — far faster than a Python `for` loop calling `.fit()`:
+
+```python
+import numpy as np
+from panelkit import SyntheticControl
+
+# stack of R simulated panels, shape (R, N, T)
+stack = np.stack([simulate_panel(tau=1.0) for _ in range(2000)])
+atts = SyntheticControl().fit_many(stack, treated=[0], treat_time=45)  # (2000,) ATTs
+power = np.mean(np.abs(atts) > crit)        # ← one cell of a power curve
+```
+
+~2000 SC fits in ~0.05 s here; a full 5-point power curve (12k fits) in ~3.6 s.
+See [`examples/power_demo.py`](examples/power_demo.py). More efficiency levers
+for large runs are listed in [BENCHMARKS.md](BENCHMARKS.md#monte-carlo--scale).
 
 ## Architecture
 
