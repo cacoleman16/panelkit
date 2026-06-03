@@ -35,6 +35,7 @@ fn _panelkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(api_did::fit_sunab_py, m)?)?;
     m.add_function(wrap_pyfunction!(api_did::bacon_decompose_py, m)?)?;
     m.add_function(wrap_pyfunction!(api_geo::geo_power, m)?)?;
+    m.add_function(wrap_pyfunction!(api_geo::geo_power_ensemble, m)?)?;
     m.add_function(wrap_pyfunction!(api_geo::geo_diagnostics, m)?)?;
     m.add_function(wrap_pyfunction!(api_geo::geo_select, m)?)?;
     m.add_class::<results::PyPowerResult>()?;

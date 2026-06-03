@@ -76,3 +76,19 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}
           path: dist
+
+  # Single aggregating gate: branch protection requires this one stable context
+  # instead of every matrix combination of the jobs above.
+  ci-success:
+    name: CI Success
+    if: always()
+    needs: [rust, python, wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all required jobs passed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::A required CI job failed or was cancelled."
+            exit 1
+          fi
+          echo "All required CI jobs passed."

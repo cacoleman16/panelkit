@@ -170,6 +170,10 @@ pub struct PyPowerResult {
     pub se_null: f64,
     #[pyo3(get)]
     pub n_windows: usize,
+    /// For the ensemble method: the normalized `[w_sc, w_asc, w_sdid]` weights
+    /// used. `None` for single-method results.
+    #[pyo3(get)]
+    pub ensemble_weights: Option<Vec<f64>>,
 }
 
 #[pymethods]
