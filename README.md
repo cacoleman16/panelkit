@@ -244,7 +244,7 @@ per-cell MDE/confidence/holdout report and a combined figure:
 the power analysis: fit SC / ASC / SDID on a test that already happened, blend
 them into a weighted-average **ensemble** estimate, and report each one's lift,
 confidence interval (in-space placebo), and cumulative incremental —
-with an SC in-space placebo p-value:
+with an in-space placebo p-value:
 
 ![test evaluation](assets/geo_evaluate.png)
 
@@ -286,7 +286,7 @@ What you get out of the box:
 - **A weighted-average ensemble** of SC + ASC + SDID (combined per placebo window,
   with auto inverse-variance weights) for a steadier estimate than any one method.
 - **Post-test evaluation** — `evaluate()` measures a test that already ran:
-  per-method + ensemble lift, bootstrap CIs, cumulative incremental, and a p-value.
+  per-method + ensemble lift, in-space placebo CIs, cumulative incremental, and a p-value.
 
 See [`examples/geo_demo.py`](examples/geo_demo.py).
 

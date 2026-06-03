@@ -18,18 +18,20 @@
 
 ## What's left to actually publish (manual / one-time)
 
-Version is set to **`0.1.0`** (`Cargo.toml [workspace.package]` + `pyproject.toml`).
+The single source of truth for the version is `Cargo.toml [workspace.package]`
+(mirrored in `pyproject.toml`). Use that value wherever `<VERSION>` appears below.
 
 1. Repo + metadata URLs are set to `github.com/cacoleman16/panelkit`.
-2. **(If re-releasing) bump the version** — PyPI versions are immutable; you
-   cannot overwrite `0.1.0` once uploaded.
+2. **Bump the version** in `Cargo.toml` + `pyproject.toml` before each release —
+   PyPI versions are immutable; you cannot overwrite a version once uploaded.
 3. **Set up Trusted Publishing on PyPI** (recommended, no tokens):
    - Create the project on PyPI (or use "pending publisher" before first upload).
    - Add a trusted publisher: this GitHub repo, workflow `release.yml`,
      environment `pypi`.
-4. **Tag and push:** `git tag v0.1.0 && git push --tags`. The `release.yml`
-   workflow builds wheels (linux/macos/windows, manylinux) + sdist and publishes
-   via OIDC.
+4. **Tag and push:** `git tag v<VERSION> && git push origin v<VERSION>`. The
+   `release.yml` workflow builds wheels (linux/macos/windows, manylinux) + sdist
+   and publishes via OIDC. (Note: `main` is branch-protected — land changes via PR
+   first, then tag the merged commit.)
 5. **Smoke-test from TestPyPI first** (optional but advised):
    `maturin publish --repository testpypi ...`, then
    `pip install -i https://test.pypi.org/simple panelkit`.

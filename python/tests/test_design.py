@@ -177,6 +177,35 @@ def test_evaluate_cis_are_calibrated_not_anticonservative():
     assert fp / K <= 0.20      # generous bound; true rate is near 0
 
 
+def test_evaluate_low_power_is_not_falsely_significant():
+    # With only one donor, in-space placebo inference is undefined. It must NOT
+    # report a (false) significant effect or a fake zero-width CI.
+    rng = np.random.default_rng(0)
+    base = 100 + np.cumsum(rng.normal(size=40))
+    Y = np.vstack([base + rng.normal(scale=0.3, size=40), base])  # market0 ≈ donor
+    Y[0, 30:] *= 1.15                                              # big injected lift
+    ev = GeoDesign(Y, names=["t", "donor"]).evaluate(treated=["t"], treat_start=30)
+    assert ev.ensemble["n_placebo"] <= 1
+    assert ev.significant is False
+    lo, hi = ev.ensemble["att_lo"], ev.ensemble["att_hi"]
+    assert not (np.isfinite(lo) and np.isfinite(hi))   # CI undefined, not zero-width
+    assert ev.p_value is None
+    assert ev.ensemble["low_power"]
+
+
+def test_evaluate_dedups_treated_markets():
+    # Listing a market twice must not inflate the cumulative (which scales by the
+    # number of treated markets).
+    Y, names = geo_panel(n=30, t=60)
+    Yt = Y.copy()
+    Yt[0, 48:] *= 1.10
+    d = GeoDesign(Yt, names=names)
+    a = d.evaluate(treated=["M00"], treat_start=48)
+    b = d.evaluate(treated=["M00", "M00"], treat_start=48)
+    assert a.cumulative == b.cumulative
+    assert a.lift == b.lift
+
+
 def test_evaluate_validates_inputs():
     Y, names = geo_panel(n=8, t=40)
     d = GeoDesign(Y, names=names)

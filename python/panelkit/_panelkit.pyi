@@ -82,7 +82,7 @@ def fit_mcnnm(
     y: npt.NDArray[np.float64],
     treated: Sequence[int],
     treat_time: int,
-    lambda_: Optional[float] = ...,
+    lambda_: Optional[float] = ...,  # NOTE: matches the Rust binding's `lambda_`
     max_iter: int = ...,
     tol: float = ...,
     seed: int = ...,

@@ -42,7 +42,8 @@ def _ensemble_weight_arg(spec):
         raise ValueError(f"unknown ensemble_weights {spec!r} (use 'auto', 'equal', "
                          "a dict, or a 3-list)")
     if isinstance(spec, dict):
-        w = [float(spec.get(m, spec.get(m.lower(), 0.0))) for m in _ENSEMBLE_ORDER]
+        norm = {str(k).upper(): v for k, v in spec.items()}  # case-insensitive keys
+        w = [float(norm.get(m, 0.0)) for m in _ENSEMBLE_ORDER]
     else:
         w = [float(x) for x in spec]
         if len(w) != 3:
@@ -407,7 +408,7 @@ class GeoDesign:
                              target_power=target_power, recommended=recommended,
                              lookback=lookback, ensemble=ensemble,
                              ensemble_weights=ensemble_weights)
-        idx = self._resolve(treated)
+        idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
         names = [self.names[i] for i in idx]
         lifts = list(_DEFAULT_LIFTS if lifts is None else lifts)
         if 0.0 not in lifts:
@@ -443,7 +444,7 @@ class GeoDesign:
             if bad:
                 raise ValueError(f"treated markets were also excluded: {bad}")
             return sub.diagnose(tnames, test_len)
-        idx = self._resolve(treated)
+        idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
         names = [self.names[i] for i in idx]
         t0 = self.t - int(test_len)
         diag = _panelkit.geo_diagnostics(self.Y, idx, int(test_len))
@@ -733,7 +734,7 @@ class GeoDesign:
                 raise ValueError(f"treated markets were also excluded: {bad}")
             return sub.evaluate(tnames, treat_start, methods=methods, weights=weights,
                                 level=level, max_placebo=max_placebo, seed=seed)
-        idx = self._resolve(treated)
+        idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
         names = [self.names[i] for i in idx]
         t0 = int(treat_start)
         if not (1 <= t0 < self.t):
@@ -807,7 +808,8 @@ class GeoDesign:
             s = sum(prec)
             wv = [p / s for p in prec] if s > 0 else [1.0 / len(order)] * len(order)
         elif isinstance(weights, dict):
-            raw = [float(weights.get(m, weights.get(m.lower(), 0.0))) for m in order]
+            norm = {str(k).upper(): v for k, v in weights.items()}  # case-insensitive
+            raw = [float(norm.get(m, 0.0)) for m in order]
             s = sum(raw)
             if s <= 0:
                 raise ValueError("ensemble weights must sum to > 0")
@@ -822,15 +824,27 @@ class GeoDesign:
         a = (1.0 - float(level)) / 2.0
 
         def _ci(point, null_samples):
-            """Pivot CI: point estimate ± the placebo null spread (null ≈ 0)."""
+            """Pivot CI: point estimate ± the placebo null spread (null ≈ 0).
+            Returns NaN when there are too few placebos to form an interval —
+            never a fake zero-width CI."""
             if len(null_samples) >= 2:
                 return point + float(np.quantile(null_samples, a)), \
                     point + float(np.quantile(null_samples, 1.0 - a))
-            return point, point
+            return float("nan"), float("nan")
 
-        # --- per-method point CIs from each method's placebo att spread ---
+        def _kept_att(samples, treated_pre_m):
+            """Placebo att-means after the Abadie 2x pre-fit filter (fallback to
+            all placebos if too few comparable ones survive)."""
+            keep = [p.mean() for (p, pre) in samples
+                    if treated_pre_m <= 0 or pre <= 2.0 * treated_pre_m]
+            if len(keep) < 5 and samples:
+                keep = [p.mean() for (p, _) in samples]
+            return np.array(keep)
+
+        # --- per-method point CIs from each method's placebo att spread (same
+        #     2x pre-fit filter as the ensemble, for internal consistency) ---
         for m in order:
-            mp = np.array([p.mean() for (p, _) in pb[m]]) if pb[m] else np.array([])
+            mp = _kept_att(pb[m], per[m]["pre_rmspe"])
             lo, hi = _ci(per[m]["att"], mp)
             cfm = per[m]["cf_mean"]
             per[m]["att_lo"], per[m]["att_hi"] = lo, hi
@@ -866,10 +880,12 @@ class GeoDesign:
             pb_att = pb_mat.mean(axis=1)
             p_value = float((1.0 + np.sum(np.abs(pb_att) >= abs(ens_att))) / (1.0 + n_pb))
         else:
-            point_lo = point_hi = ens_path.copy()
-            point_hw = 0.0
+            # too few comparable placebos → inference undefined (no fake band)
             run = np.cumsum(ens_path)
-            cum_lo_band = cum_hi_band = np.zeros(post_len)
+            point_lo = np.full(post_len, np.nan)
+            point_hi = np.full(post_len, np.nan)
+            point_hw = 0.0
+            cum_lo_band = cum_hi_band = np.full(post_len, np.nan)
             pb_att = np.array([])
             p_value = None
         att_lo, att_hi = _ci(ens_att, pb_att)
@@ -883,6 +899,7 @@ class GeoDesign:
             "lift_hi": att_hi / ens_cf_mean if ens_cf_mean else float("nan"),
             "cumulative": float(ens_path.sum()) * n_treated,
             "weights": wmap, "n_placebo": n_pb,
+            "low_power": n_pb < 8,   # too few placebos for reliable inference
         }
 
         # full-timeline counterfactual + gap path (pre shows fit; post = effect)
@@ -1000,11 +1017,14 @@ class _MultiCellReport:
                      f"({', '.join(map(str, self.cells))})")
         lines.append(f"Test duration     : {self.test_len} periods")
         lines.append(f"Shared donor pool : {len(self.donor_names)} markets")
-        lines.append(f"Combined holdout  : {100*self.pooled_holdout:.1f}% of total volume")
+        lines.append(f"Combined holdout  : {100*self.pooled_holdout:.1f}% of total volume "
+                     f"(all cells together)")
         lines.append(f"Powered at {int(100*self.target_power)}% power, "
                      f"{int(100*(1-self.alpha))}% confidence "
                      f"(each cell vs. the shared pool).")
         lines.append("")
+        # Per-cell 'Holdout' is that cell's share of its OWN sub-panel (cell +
+        # shared donors); the Combined holdout above is over the full panel.
         lines.append(f"{'Cell':<14}{'Markets':<28}{'MDE':>8}{'Conf':>7}{'Holdout':>9}")
         lines.append("-" * 64)
         for label, rep in self.cells.items():
@@ -1069,8 +1089,11 @@ class _EvalReport:
 
     @property
     def significant(self):
-        """True if the ensemble CI excludes zero (effect detected)."""
+        """True if the ensemble CI is well-defined and excludes zero. Returns
+        False when inference is undefined (too few placebos → NaN interval)."""
         lo, hi = self.ensemble["att_lo"], self.ensemble["att_hi"]
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            return False
         return (lo > 0) or (hi < 0)
 
     def summary(self) -> str:
@@ -1092,11 +1115,19 @@ class _EvalReport:
         lines.append(f"   ensemble weights: {wstr}")
         lines.append("")
         if self.p_value is not None:
-            lines.append(f"SC in-space placebo p-value : {self.p_value:.3f}")
-        verdict = ("✓ Significant lift — the ensemble interval excludes zero."
-                   if self.significant else
-                   "~ Not distinguishable from zero at this level — the ensemble "
-                   "interval includes zero.")
+            lines.append(f"In-space placebo p-value    : {self.p_value:.3f}  "
+                         f"(ensemble, {e.get('n_placebo', 0)} donors)")
+        if e.get("low_power"):
+            lines.append("⚠ Few comparable donors — inference is low-powered; treat "
+                         "intervals/p-value with caution.")
+        if self.significant:
+            verdict = "✓ Significant lift — the ensemble interval excludes zero."
+        elif not (np.isfinite(e["att_lo"]) and np.isfinite(e["att_hi"])):
+            verdict = ("? Inference undefined — too few comparable donor placebos "
+                       "to form an interval.")
+        else:
+            verdict = ("~ Not distinguishable from zero at this level — the ensemble "
+                       "interval includes zero.")
         lines.append(f"Headline (ensemble)         : {100*e['lift']:+.2f}% lift, "
                      f"{e['cumulative']:,.0f} cumulative incremental")
         if "cum_lo" in e:
@@ -1588,7 +1619,7 @@ def _plot_eval(rep: "_EvalReport", path):
     axc.set_title("Lift by method", fontweight="bold")
     axc.grid(True, axis="x", alpha=0.25)
 
-    pv = f"  ·  SC placebo p={rep.p_value:.3f}" if rep.p_value is not None else ""
+    pv = f"  ·  placebo p={rep.p_value:.3f}" if rep.p_value is not None else ""
     verdict = "significant" if rep.significant else "not significant"
     fig.suptitle(f"panelkit · test evaluation — ensemble lift "
                  f"{100*rep.ensemble['lift']:+.2f}% ({verdict}){pv}",

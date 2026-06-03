@@ -111,13 +111,15 @@ pub fn fit_sdid(
 /// Fit Matrix-Completion NNM (Athey et al. 2021). `max_rank`, when set, uses a
 /// fast randomized truncated SVD inside SoftImpute (big speedup, low-rank cap).
 #[pyfunction]
-#[pyo3(signature = (y, treated, treat_time, lambda=None, max_iter=200, tol=1e-5, seed=0, max_rank=None))]
+// `lambda_` (not `lambda`) so it is usable as a Python keyword argument —
+// `lambda` is a reserved word in Python.
+#[pyo3(signature = (y, treated, treat_time, lambda_=None, max_iter=200, tol=1e-5, seed=0, max_rank=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_mcnnm(
     y: PyReadonlyArray2<f64>,
     treated: Vec<usize>,
     treat_time: usize,
-    lambda: Option<f64>,
+    lambda_: Option<f64>,
     max_iter: usize,
     tol: f64,
     seed: u64,
@@ -125,7 +127,7 @@ pub fn fit_mcnnm(
 ) -> PyResult<PyScResult> {
     let panel = Panel::block(mat_from_numpy(&y), &treated, treat_time);
     let cfg = McnnmConfig {
-        lambda,
+        lambda: lambda_,
         max_iter,
         tol,
         seed,

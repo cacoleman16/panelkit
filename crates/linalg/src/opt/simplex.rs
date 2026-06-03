@@ -30,17 +30,14 @@ pub fn project_simplex(v: &[f64]) -> Vec<f64> {
     let mut u = v.to_vec();
     u.sort_by(|a, b| b.partial_cmp(a).unwrap()); // descending
     let mut css = 0.0;
-    let mut rho = 0usize;
     let mut theta = 0.0;
     for (j, &uj) in u.iter().enumerate() {
         css += uj;
         let t = (css - 1.0) / (j as f64 + 1.0);
         if uj - t > 0.0 {
-            rho = j + 1;
             theta = t;
         }
     }
-    let _ = rho;
     v.iter().map(|&vi| (vi - theta).max(0.0)).collect()
 }
 
