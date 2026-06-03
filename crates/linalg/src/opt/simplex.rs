@@ -145,8 +145,13 @@ pub fn solve_fw(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> S
         let dgd = dot(&d, &gd_vec);
         let gamma = if dgd > 0.0 {
             (-gd / dgd).clamp(0.0, gamma_max)
-        } else {
+        } else if gd < 0.0 {
+            // Non-positive curvature along a descent direction → go to the
+            // feasible cap (bounded so the step never leaves the simplex).
             gamma_max.min(1.0)
+        } else {
+            // Not a descent direction → don't move.
+            0.0
         };
         for i in 0..j {
             w[i] += gamma * d[i];

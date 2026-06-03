@@ -92,8 +92,18 @@ impl Qr {
     }
 
     /// Back-substitute `R x = rhs[0..n]`, returning `x` (length `n`).
+    ///
+    /// Householder QR does not rank-reveal, so a rank-deficient design can leave a
+    /// (near-)zero pivot on the diagonal. Rather than emit `inf`/`NaN` (which would
+    /// silently poison downstream OLS coefficients), we zero that component — a
+    /// minimum-norm-style choice — using a relative pivot threshold.
     fn back_solve(&self, rhs: &[f64]) -> Vec<f64> {
         let n = self.n;
+        let mut max_diag = 0.0_f64;
+        for i in 0..n {
+            max_diag = max_diag.max(self.packed.get(i, i).abs());
+        }
+        let eps = 1e-12 * max_diag.max(1.0);
         let mut x = vec![0.0; n];
         for i in (0..n).rev() {
             let mut s = rhs[i];
@@ -101,7 +111,7 @@ impl Qr {
                 s -= self.packed.get(i, k) * x[k];
             }
             let rii = self.packed.get(i, i);
-            x[i] = s / rii;
+            x[i] = if rii.abs() > eps { s / rii } else { 0.0 };
         }
         x
     }
