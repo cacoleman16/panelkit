@@ -15,6 +15,10 @@ pub struct Panel {
     y: Mat,
     /// Per-unit first-treated period; `None` for never-treated units.
     treat_start: Vec<Option<usize>>,
+    /// Optional time-invariant unit covariates, `N×K`. Used by covariate-adjusted
+    /// estimators (e.g. regression-adjusted Callaway–Sant'Anna); ignored by
+    /// estimators that don't take covariates.
+    covariates: Option<Mat>,
 }
 
 impl Panel {
@@ -28,7 +32,30 @@ impl Panel {
             treat_start.len(),
             y.rows()
         );
-        Panel { y, treat_start }
+        Panel {
+            y,
+            treat_start,
+            covariates: None,
+        }
+    }
+
+    /// Attach time-invariant unit covariates (`N×K`). Panics on row mismatch.
+    pub fn with_covariates(mut self, x: Mat) -> Panel {
+        assert_eq!(
+            x.rows(),
+            self.y.rows(),
+            "covariate rows {} != n_units {}",
+            x.rows(),
+            self.y.rows()
+        );
+        self.covariates = Some(x);
+        self
+    }
+
+    /// Time-invariant unit covariates, if attached.
+    #[inline]
+    pub fn covariates(&self) -> Option<&Mat> {
+        self.covariates.as_ref()
     }
 
     /// Construct a block-treatment panel: the units in `treated` all begin

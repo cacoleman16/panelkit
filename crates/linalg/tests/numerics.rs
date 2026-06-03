@@ -303,6 +303,60 @@ fn svt_thresholds_spectrum() {
 }
 
 #[test]
+fn randomized_svd_recovers_low_rank_spectrum() {
+    use panelkit_linalg::factor::randomized::randomized_svd;
+    // Build an exactly rank-3 matrix; randomized SVD should match the top-3
+    // singular values of the full Jacobi SVD closely.
+    let mut rng = Xoshiro256pp::seed_from_u64(101);
+    let m = 60;
+    let n = 40;
+    let r = 3;
+    let a_factor = rand_mat(&mut rng, m, r);
+    let b_factor = rand_mat(&mut rng, r, n);
+    let a = matmul(&a_factor, &b_factor); // rank 3
+
+    let full = Svd::new(&a);
+    let rsvd = randomized_svd(&a, r, 8, 2, 42);
+    for i in 0..r {
+        let rel =
+            (rsvd.s[i] - full.singular_values()[i]).abs() / full.singular_values()[i].max(1e-12);
+        assert!(
+            rel < 1e-6,
+            "sv {i}: rand {} vs full {}",
+            rsvd.s[i],
+            full.singular_values()[i]
+        );
+    }
+    // Reconstruction (no thresholding) recovers A.
+    let recon = rsvd.reconstruct_with(&rsvd.s);
+    assert!(
+        diff_frob(&recon, &a) < 1e-6,
+        "randomized reconstruction off"
+    );
+}
+
+#[test]
+fn svt_truncated_matches_full_svt_on_low_rank() {
+    use panelkit_linalg::opt::softthresh::{svt, svt_truncated};
+    let mut rng = Xoshiro256pp::seed_from_u64(202);
+    let a_factor = rand_mat(&mut rng, 50, 4);
+    let b_factor = rand_mat(&mut rng, 4, 30);
+    let mut a = matmul(&a_factor, &b_factor);
+    // add tiny noise so it's near-rank-4
+    for v in a.as_mut_slice().iter_mut() {
+        *v += 0.001 * rng.next_normal();
+    }
+    let s = Svd::new(&a).singular_values().to_vec();
+    let lambda = s[3] * 0.5;
+    let (full_thr, _) = svt(&a, lambda);
+    let (trunc_thr, _) = svt_truncated(&a, lambda, 8, 7);
+    assert!(
+        diff_frob(&full_thr, &trunc_thr) / frobenius(&full_thr) < 1e-3,
+        "truncated SVT differs from full SVT"
+    );
+}
+
+#[test]
 fn frobenius_norm_matches_manual() {
     let a = Mat::from_row_major(2, 2, &[3.0, 4.0, 0.0, 0.0]);
     assert!((frobenius(&a) - 5.0).abs() < TOL);

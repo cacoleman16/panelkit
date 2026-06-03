@@ -86,6 +86,7 @@ def fit_mcnnm(
     max_iter: int = ...,
     tol: float = ...,
     seed: int = ...,
+    max_rank: Optional[int] = ...,
 ) -> SCResult: ...
 def fit_cpasc(
     y: npt.NDArray[np.float64],
@@ -177,7 +178,10 @@ def geo_select(
     seed: int = ...,
 ) -> list[MarketCandidate]: ...
 def fit_callaway_py(
-    y: npt.NDArray[np.float64], cohorts: Sequence[int], control: str = ...
+    y: npt.NDArray[np.float64],
+    cohorts: Sequence[int],
+    control: str = ...,
+    covariates: Optional[npt.NDArray[np.float64]] = ...,
 ) -> DiDResult: ...
 def fit_sunab_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> DiDResult: ...
 def bacon_decompose_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> BaconResult: ...

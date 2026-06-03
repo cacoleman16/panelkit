@@ -31,3 +31,13 @@ pub fn svt_from(svd: &Svd, lambda: f64) -> (Mat, f64) {
     let nuc: f64 = thresh.iter().sum();
     (svd.reconstruct_with(&thresh), nuc)
 }
+
+/// Truncated SVT via a randomized rank-`max_rank` SVD — much faster than a full
+/// SVD when the result is low-rank (the usual MC-NNM case). Self-contained
+/// (reuses panelkit's QR + Jacobi SVD), no LAPACK.
+pub fn svt_truncated(a: &Mat, lambda: f64, max_rank: usize, seed: u64) -> (Mat, f64) {
+    let rsvd = crate::factor::randomized::randomized_svd(a, max_rank, 6, 1, seed);
+    let thresh: Vec<f64> = rsvd.s.iter().map(|&s| (s - lambda).max(0.0)).collect();
+    let nuc: f64 = thresh.iter().sum();
+    (rsvd.reconstruct_with(&thresh), nuc)
+}

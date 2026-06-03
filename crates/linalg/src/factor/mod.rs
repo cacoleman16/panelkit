@@ -4,10 +4,12 @@
 pub mod cholesky;
 pub mod eig_sym;
 pub mod qr;
+pub mod randomized;
 pub mod svd;
 pub mod svd_gram;
 
 pub use cholesky::Cholesky;
 pub use eig_sym::SymEig;
 pub use qr::Qr;
+pub use randomized::{randomized_svd, RandomizedSvd};
 pub use svd::Svd;

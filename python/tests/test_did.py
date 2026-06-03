@@ -71,6 +71,24 @@ def test_callaway_bad_control_raises():
         CallawaySantAnna(control_group="bogus").fit(Y, ts)
 
 
+def test_callaway_covariate_adjustment_runs():
+    Y, ts, true_att = staggered(2.0, 2.0, seed=9)
+    n = Y.shape[0]
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(n, 2))            # 2 unit covariates
+    res = CallawaySantAnna().fit(Y, ts, covariates=X)
+    assert abs(res.att - true_att) < 0.6   # adjustment shouldn't break recovery
+    # 1-D covariate also accepted
+    res1 = CallawaySantAnna().fit(Y, ts, covariates=X[:, 0])
+    assert res1.att == res1.att  # not NaN
+
+
+def test_callaway_covariate_shape_check():
+    Y, ts, _ = staggered(2.0, 2.0, seed=10)
+    with pytest.raises(ValueError):
+        CallawaySantAnna().fit(Y, ts, covariates=np.zeros((3, 2)))  # wrong N
+
+
 def test_bacon_reproduces_twfe():
     Y, ts, _ = staggered(1.0, 8.0, seed=5)
     twfe = TWFE().fit(Y, ts).att

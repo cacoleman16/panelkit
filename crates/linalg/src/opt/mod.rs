@@ -5,4 +5,4 @@ pub mod simplex;
 pub mod softthresh;
 
 pub use simplex::{project_simplex, sc_weights, solve_fw, solve_pg, SimplexSolution};
-pub use softthresh::{svt, svt_from};
+pub use softthresh::{svt, svt_from, svt_truncated};

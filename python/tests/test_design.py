@@ -81,3 +81,66 @@ def test_from_long_roundtrip():
     d = GeoDesign.from_long(df, location="dma", time="week", outcome="sales")
     assert d.n == 6 and d.t == 12
     np.testing.assert_allclose(np.sort(d.Y, axis=0), np.sort(Y, axis=0), rtol=1e-9)
+
+
+def test_from_long_robust_to_messy_dtypes():
+    pd = pytest.importorskip("pandas")
+    Y, names = geo_panel(n=5, t=10)
+    rows = []
+    for i, nm in enumerate(names):
+        for t in range(Y.shape[1]):
+            rows.append({"dma": nm,
+                         "week": f"2024-01-{t+1:02d}",     # date strings
+                         "sales": repr(float(Y[i, t]))})    # numeric-as-string (full precision)
+    df = pd.DataFrame(rows).sample(frac=1.0, random_state=0)  # shuffle order
+    d = GeoDesign.from_long(df, location="dma", time="week", outcome="sales")
+    assert d.n == 5 and d.t == 10
+    # columns came back in chronological (date) order, so column 0 == period 0
+    np.testing.assert_allclose(d.Y[:, 0], Y[[names.index(x) for x in d.names], 0], rtol=1e-9)
+
+
+def test_from_long_errors_on_nonnumeric_and_gaps():
+    pd = pytest.importorskip("pandas")
+    Y, names = geo_panel(n=4, t=6)
+    # build the outcome column as object so a string value is allowed in it
+    rows = [{"dma": nm, "week": t, "sales": (str(Y[i, t]) if not (i == 0 and t == 3) else "N/A")}
+            for i, nm in enumerate(names) for t in range(6)]
+    bad = pd.DataFrame(rows)
+    with pytest.raises(ValueError, match="non-numeric"):
+        GeoDesign.from_long(bad, location="dma", time="week", outcome="sales")
+    good_rows = [{"dma": nm, "week": t, "sales": float(Y[i, t])}
+                 for i, nm in enumerate(names) for t in range(6)]
+    gappy = pd.DataFrame(good_rows).iloc[:-1]         # drop a cell → unbalanced
+    with pytest.raises(ValueError, match="unbalanced|missing"):
+        GeoDesign.from_long(gappy, location="dma", time="week", outcome="sales")
+
+
+def test_recommend_sweeps_and_recommends():
+    Y, names = geo_panel(n=14)
+    d = GeoDesign(Y, names=names)
+    grid = d.recommend(test_lengths=[8, 12], n_geos_options=[1, 2, 3],
+                       target_lift=0.1, alphas=[0.1], n_candidates=24)
+    assert len(grid.rows) >= 1
+    rec = grid.recommended
+    assert rec is not None
+    assert rec["test_len"] in (8, 12) and rec["n_geos"] in (1, 2, 3)
+    assert "SPECIFICATION RECOMMENDATIONS" in grid.summary()
+
+
+def test_recommend_plot_writes_file(tmp_path):
+    Y, names = geo_panel(n=12)
+    d = GeoDesign(Y, names=names)
+    grid = d.recommend(test_lengths=[8, 12], n_geos_options=[1, 2],
+                       target_lift=0.1, alphas=[0.05, 0.1], n_candidates=20)
+    out = tmp_path / "tradeoffs.png"
+    grid.plot(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_alpha_affects_power_threshold():
+    Y, names = geo_panel()
+    d = GeoDesign(Y, names=names)
+    strict = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05], alpha=0.01)
+    loose = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05], alpha=0.20)
+    # A looser alpha makes the critical threshold smaller → power no lower.
+    assert loose.best.power[-1] >= strict.best.power[-1] - 1e-9

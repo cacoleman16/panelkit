@@ -30,6 +30,11 @@ pub struct McnnmConfig {
     pub tol: f64,
     /// Seed for the CV hold-out (determinism).
     pub seed: u64,
+    /// Optional rank cap: when set, each SoftImpute iteration uses a fast
+    /// **randomized truncated SVD** (rank `max_rank`) instead of a full SVD.
+    /// A large speedup when the counterfactual is low-rank (the usual case),
+    /// while staying dependency-free. `None` = exact full SVD.
+    pub max_rank: Option<usize>,
 }
 
 impl Default for McnnmConfig {
@@ -42,13 +47,22 @@ impl Default for McnnmConfig {
             max_iter: 100,
             tol: 1e-4,
             seed: 0,
+            max_rank: None,
         }
     }
 }
 
 /// One SoftImpute solve for a fixed `lambda`. `observed[i + j*n]` (column-major)
 /// flags whether entry `(i, j)` is observed. Returns the low-rank estimate `L`.
-fn soft_impute(y: &Mat, observed: &[bool], lambda: f64, max_iter: usize, tol: f64) -> Mat {
+fn soft_impute(
+    y: &Mat,
+    observed: &[bool],
+    lambda: f64,
+    max_iter: usize,
+    tol: f64,
+    max_rank: Option<usize>,
+    seed: u64,
+) -> Mat {
     let (n, t) = y.shape();
     let mut l = Mat::zeros(n, t);
     let mut m = Mat::zeros(n, t);
@@ -61,7 +75,10 @@ fn soft_impute(y: &Mat, observed: &[bool], lambda: f64, max_iter: usize, tol: f6
                 l.as_slice()[idx]
             };
         }
-        let (l_new, _nuc) = svt(&m, lambda);
+        let (l_new, _nuc) = match max_rank {
+            Some(r) => panelkit_linalg::opt::softthresh::svt_truncated(&m, lambda, r, seed),
+            None => svt(&m, lambda),
+        };
         // Convergence on relative Frobenius change.
         let mut num = 0.0;
         let mut den = 0.0;
@@ -142,7 +159,15 @@ fn cv_lambda(y: &Mat, observed: &[bool], cfg: &McnnmConfig) -> f64 {
     let mut best_lambda = grid[0];
     let mut best_err = f64::INFINITY;
     for &lam in &grid {
-        let l = soft_impute(y, &train, lam, cfg.max_iter, cfg.tol);
+        let l = soft_impute(
+            y,
+            &train,
+            lam,
+            cfg.max_iter,
+            cfg.tol,
+            cfg.max_rank,
+            cfg.seed,
+        );
         let mut err = 0.0;
         for &idx in &val_idx {
             let d = y.as_slice()[idx] - l.as_slice()[idx];
@@ -181,7 +206,15 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: McnnmConfig) -> ScFit {
     }
 
     let lambda = cfg.lambda.unwrap_or_else(|| cv_lambda(&y, &observed, &cfg));
-    let l = soft_impute(&y, &observed, lambda, cfg.max_iter, cfg.tol);
+    let l = soft_impute(
+        &y,
+        &observed,
+        lambda,
+        cfg.max_iter,
+        cfg.tol,
+        cfg.max_rank,
+        cfg.seed,
+    );
 
     let treated = panel.treated_units();
     let t_post = t - t0;

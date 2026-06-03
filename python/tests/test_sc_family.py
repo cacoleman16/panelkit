@@ -43,3 +43,12 @@ def test_mcnnm_deterministic():
     a = MCNNM(seed=123).fit(y, treated=[0], treat_time=t0).att
     b = MCNNM(seed=123).fit(y, treated=[0], treat_time=t0).att
     assert a == b  # same seed -> identical CV hold-out -> identical result
+
+
+def test_mcnnm_truncated_svd_recovers_effect():
+    # max_rank switches to the fast randomized truncated SVD; on a low-rank
+    # panel it should land near the full-SVD answer.
+    y, t0 = factor_panel(3.0, seed=9)
+    full = MCNNM(lambda_=1.0).fit(y, treated=[0], treat_time=t0).att
+    fast = MCNNM(lambda_=1.0, max_rank=6).fit(y, treated=[0], treat_time=t0).att
+    assert abs(fast - full) < 0.5

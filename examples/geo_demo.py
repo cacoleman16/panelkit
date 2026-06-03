@@ -42,3 +42,37 @@ for i, c in enumerate(ranked, 1):
     mde = f"{100*c['mde_pct']:.1f}%" if c["mde_pct"] is not None else "—"
     print(f"{i}. {', '.join(c['markets']):<28} power={c['power_at_target']:.2f}  "
           f"MDE={mde:>6}  holdout={100*c['holdout_pct']:.1f}%  conf={c['confidence']:.0f}")
+
+# --- recommendations across specifications (length × #geos × alpha) ----------
+print()
+grid = design.recommend(
+    test_lengths=[4, 8, 12],
+    n_geos_options=[1, 2, 3],
+    target_lift=0.05,
+    alphas=[0.05, 0.10],
+    n_candidates=30,
+)
+print(grid.summary())
+grid.plot("assets/geo_scenarios.png")
+print("\nwrote assets/geo_scenarios.png")
+
+# --- robust DataFrame ingest: messy dtypes are handled --------------------
+try:
+    import pandas as pd
+
+    rows = []
+    for i in range(N):
+        for t in range(T):
+            rows.append({
+                "dma": names[i],
+                # dates as strings (parsed to real dates), shuffled order:
+                "week": f"2024-W{t:02d}",
+                # outcome as strings with stray formatting:
+                "sales": f"{Y[i, t]:.2f}",
+            })
+    df = pd.DataFrame(rows).sample(frac=1.0, random_state=0)  # shuffle rows
+    d2 = GeoDesign.from_long(df, location="dma", time="week", outcome="sales")
+    print(f"\nfrom_long on messy/shuffled string-typed DataFrame → "
+          f"{d2.n} markets × {d2.t} periods OK")
+except ImportError:
+    print("\n(pandas not installed; skipping DataFrame demo)")

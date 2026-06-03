@@ -304,6 +304,10 @@ class MCNNM:
     Estimates a low-rank counterfactual by iterative singular-value
     thresholding (SoftImpute). ``lambda_`` is chosen by cross-validation when
     left as ``None``.
+
+    ``max_rank`` (optional) switches the inner SVD to a fast **randomized
+    truncated SVD** of that rank — a large speedup when the counterfactual is
+    low-rank, while staying dependency-free. Leave ``None`` for an exact SVD.
     """
 
     def __init__(
@@ -312,11 +316,13 @@ class MCNNM:
         max_iter: int = 200,
         tol: float = 1e-5,
         seed: int = 0,
+        max_rank: int | None = None,
     ):
         self.lambda_ = lambda_
         self.max_iter = max_iter
         self.tol = tol
         self.seed = seed
+        self.max_rank = max_rank
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
@@ -330,6 +336,7 @@ class MCNNM:
             int(self.max_iter),
             float(self.tol),
             int(self.seed),
+            None if self.max_rank is None else int(self.max_rank),
         )
         return _Result(raw)
 
@@ -506,11 +513,22 @@ class CallawaySantAnna:
     def __init__(self, control_group: str = "never"):
         self.control_group = control_group
 
-    def fit(self, y, treat_start: Sequence) -> _DiDResult:
+    def fit(self, y, treat_start: Sequence, covariates=None) -> _DiDResult:
+        """Fit C&S. Pass ``covariates`` (an ``N×K`` array of time-invariant unit
+        characteristics) for covariate-adjusted (regression-adjustment) ATTs."""
         mat = _as_matrix(y)
+        cov = None
+        if covariates is not None:
+            cov = np.ascontiguousarray(np.asarray(covariates, dtype=np.float64))
+            if cov.ndim == 1:
+                cov = cov.reshape(-1, 1)
+            if cov.ndim != 2 or cov.shape[0] != mat.shape[0]:
+                raise ValueError(
+                    f"covariates must be (N, K) with N={mat.shape[0]} rows, got {cov.shape}"
+                )
         return _DiDResult(
             _panelkit.fit_callaway_py(
-                mat, _cohorts(treat_start, mat.shape[0]), self.control_group
+                mat, _cohorts(treat_start, mat.shape[0]), self.control_group, cov
             )
         )
 

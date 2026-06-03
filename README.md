@@ -183,15 +183,33 @@ from panelkit.design import GeoDesign
 # from a long/tidy DataFrame (location, date, outcome) — or GeoDesign(Y, names=…)
 design = GeoDesign.from_long(df, location="dma", time="week", outcome="sales")
 
-rep = design.power(treated=["chicago", "denver"], test_len=8)
+rep = design.power(treated=["chicago", "denver"], test_len=8, alpha=0.10)
 print(rep.summary())          # plain-English report: MDE, confidence, warnings
 rep.plot("design.png")        # the figure below
 
-# or let it pick the markets for you:
+# let it pick the markets for you:
 ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3)
+
+# or sweep specifications (length × #geos × significance) and recommend one:
+grid = design.recommend(test_lengths=[4, 6, 8, 12], n_geos_options=[1, 2, 3, 4],
+                        target_lift=0.05, alphas=[0.05, 0.10])
+print(grid.summary())
+grid.plot("tradeoffs.png")    # the tradeoffs figure below
 ```
 
 ![geo design report](assets/geo_design.png)
+
+**Recommendations across specifications.** `recommend(...)` sweeps test length ×
+number of geos × significance level (`alpha`) and points you at the cheapest
+design that still detects your target lift — with a figure of the tradeoffs:
+
+![specification tradeoffs](assets/geo_scenarios.png)
+
+**Messy DataFrame? No problem.** `from_long` coerces real-world data: outcome
+strings → numeric (with a clear error on genuinely non-numeric values), dates
+(string or unsorted) → chronological columns, locations → market names, duplicate
+rows aggregated with a warning, and a clear error (with a count) if the panel is
+gappy. You don't pre-clean dtypes.
 
 What it does that GeoLift doesn't, out of the box:
 

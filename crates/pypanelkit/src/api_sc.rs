@@ -108,9 +108,11 @@ pub fn fit_sdid(
     Ok(result_from_fit(&fit_sdid_at(&panel, treat_time, cfg)))
 }
 
-/// Fit Matrix-Completion NNM (Athey et al. 2021).
+/// Fit Matrix-Completion NNM (Athey et al. 2021). `max_rank`, when set, uses a
+/// fast randomized truncated SVD inside SoftImpute (big speedup, low-rank cap).
 #[pyfunction]
-#[pyo3(signature = (y, treated, treat_time, lambda=None, max_iter=200, tol=1e-5, seed=0))]
+#[pyo3(signature = (y, treated, treat_time, lambda=None, max_iter=200, tol=1e-5, seed=0, max_rank=None))]
+#[allow(clippy::too_many_arguments)]
 pub fn fit_mcnnm(
     y: PyReadonlyArray2<f64>,
     treated: Vec<usize>,
@@ -119,6 +121,7 @@ pub fn fit_mcnnm(
     max_iter: usize,
     tol: f64,
     seed: u64,
+    max_rank: Option<usize>,
 ) -> PyResult<PyScResult> {
     let panel = Panel::block(mat_from_numpy(&y), &treated, treat_time);
     let cfg = McnnmConfig {
@@ -126,6 +129,7 @@ pub fn fit_mcnnm(
         max_iter,
         tol,
         seed,
+        max_rank,
     };
     Ok(result_from_fit(&fit_mcnnm_at(&panel, treat_time, cfg)))
 }

@@ -15,6 +15,46 @@
 //! treated and doubly-robust variants are clean extensions of the same scaffold.
 
 use crate::panel::Panel;
+use panelkit_linalg::solve::ols;
+use panelkit_linalg::Mat;
+
+/// Fit a regression-adjustment model: OLS of the long-difference `dy` on
+/// `[1, X]` among the comparison units. Returns `Some(beta)` (length `K+1`) when
+/// the panel has covariates and the system is solvable, else `None` (→ no
+/// adjustment, the simple estimator).
+fn covariate_beta(panel: &Panel, dy: &dyn Fn(usize) -> f64, comp: &[usize]) -> Option<Vec<f64>> {
+    let x = panel.covariates()?;
+    let k = x.cols();
+    if comp.len() <= k + 1 {
+        return None; // too few controls to fit the regression
+    }
+    // Design [1, X] for comparison units; target = dy(comp).
+    let mut design = Mat::zeros(comp.len(), k + 1);
+    let mut target = vec![0.0; comp.len()];
+    for (r, &i) in comp.iter().enumerate() {
+        design.set(r, 0, 1.0);
+        for c in 0..k {
+            design.set(r, c + 1, x.get(i, c));
+        }
+        target[r] = dy(i);
+    }
+    ols(&design, &target).ok()
+}
+
+/// Predicted long-difference for unit `i` from a regression-adjustment `beta`
+/// (`[1, X_i]·beta`); 0 when there is no adjustment.
+fn predict(panel: &Panel, beta: &Option<Vec<f64>>, i: usize) -> f64 {
+    match (beta, panel.covariates()) {
+        (Some(b), Some(x)) => {
+            let mut v = b[0];
+            for c in 0..x.cols() {
+                v += b[c + 1] * x.get(i, c);
+            }
+            v
+        }
+        _ => 0.0,
+    }
+}
 
 /// A single group-time average treatment effect.
 #[derive(Clone, Debug)]
@@ -133,20 +173,29 @@ pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
             // Long differences relative to the base period.
             let dy = |i: usize| panel.outcome(i, period) - panel.outcome(i, base);
 
-            let m_g: f64 = units_g.iter().map(|&i| dy(i)).sum::<f64>() / ng as f64;
-            let m_c: f64 = comp.iter().map(|&i| dy(i)).sum::<f64>() / nc as f64;
+            // Covariate adjustment (regression-adjustment / outcome-regression):
+            // regress ΔY on [1, X] among the comparison group and subtract the
+            // fitted value, so e_i is the covariate-residualized change. With no
+            // covariates this collapses to e_i = ΔY_i (the simple estimator).
+            let beta = covariate_beta(panel, &dy, &comp);
+            let e = |i: usize| dy(i) - predict(panel, &beta, i);
+
+            let m_g: f64 = units_g.iter().map(|&i| e(i)).sum::<f64>() / ng as f64;
+            let m_c: f64 = comp.iter().map(|&i| e(i)).sum::<f64>() / nc as f64;
             let att = m_g - m_c;
 
             // Influence function over all N units (total-N scaling, consistent
-            // across (g,t) so aggregations combine correctly).
+            // across (g,t) so aggregations combine correctly). Note: with
+            // covariates the IF omits the β-estimation correction term, so SEs
+            // are approximate (full doubly-robust SEs need the propensity model).
             let mut influence = vec![0.0; n];
             let p_g = ng as f64 / n as f64;
             let p_c = nc as f64 / n as f64;
             for &i in &units_g {
-                influence[i] = (dy(i) - m_g) / p_g;
+                influence[i] = (e(i) - m_g) / p_g;
             }
             for &i in &comp {
-                influence[i] -= (dy(i) - m_c) / p_c;
+                influence[i] -= (e(i) - m_c) / p_c;
             }
 
             group_time.push(GroupTimeAtt {

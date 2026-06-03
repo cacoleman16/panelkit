@@ -39,13 +39,16 @@ pub fn fit_twfe_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyDi
 }
 
 /// Callaway & Sant'Anna group-time ATTs aggregated to overall + event study.
-/// `control` is "never" (never-treated) or "notyet" (not-yet-treated).
+/// `control` is "never" (never-treated) or "notyet" (not-yet-treated). When
+/// `covariates` (an `N×K` array) is given, uses covariate-adjusted (regression-
+/// adjustment) ATTs.
 #[pyfunction]
-#[pyo3(signature = (y, cohorts, control="never"))]
+#[pyo3(signature = (y, cohorts, control="never", covariates=None))]
 pub fn fit_callaway_py(
     y: PyReadonlyArray2<f64>,
     cohorts: Vec<i64>,
     control: &str,
+    covariates: Option<PyReadonlyArray2<f64>>,
 ) -> PyResult<PyDidResult> {
     let cg = match control {
         "never" => ControlGroup::NeverTreated,
@@ -56,7 +59,10 @@ pub fn fit_callaway_py(
             )))
         }
     };
-    let panel = build_panel(y, cohorts);
+    let mut panel = build_panel(y, cohorts);
+    if let Some(cov) = covariates {
+        panel = panel.with_covariates(mat_from_numpy(&cov));
+    }
     let cs = fit_callaway_with(&panel, cg);
     Ok(PyDidResult {
         att: cs.overall_att,

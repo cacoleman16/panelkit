@@ -80,7 +80,9 @@ low-rank (a latent-factor structure).
 
 **Use when.** Many treated cells / a genuine factor structure; you do not want to
 commit to explicit unit weights. It is the intrinsically heavy estimator (a full
-SVD per iteration).
+SVD per iteration) — pass `max_rank=k` to switch the inner SVD to a fast,
+self-contained **randomized truncated SVD** (a large speedup when the
+counterfactual is low-rank, which it usually is).
 
 **Inference.** Conformal / block resampling (the point estimate is the primary
 output in v1).
@@ -149,13 +151,16 @@ ATT robust to treatment-effect heterogeneity.
 after the periods involved). Not-yet-treated gives a larger control pool and
 **works even when there are no never-treated units**.
 
-**Inference.** Influence-function SEs (analytic) or **multiplier (wild)
-bootstrap**, clustered by unit.
+**Covariate adjustment.** Pass `covariates=X` (an `N×K` array of time-invariant
+unit characteristics) to use the **regression-adjustment** variant: each
+group-time ATT regresses the long-difference on `[1, X]` among the comparison
+group and subtracts the fit, removing covariate-driven differential trends. With
+no covariates it reduces exactly to the simple estimator.
 
-> *Follow-up:* the doubly-robust / covariate-adjusted C&S variant needs unit
-> covariates, which the current `Panel` does not carry; without covariates it
-> coincides with the simple estimator above. Adding a covariate channel to
-> `Panel` is the clean next step for that variant.
+**Inference.** Influence-function SEs (analytic) or **multiplier (wild)
+bootstrap**, clustered by unit. *(With covariates the IF omits the
+β-estimation correction term, so those SEs are approximate; a fully
+doubly-robust variant — adding an IPW propensity model — is the next step.)*
 
 ---
 
@@ -196,3 +201,76 @@ distrust TWFE, use C&S/SA.
 - **Low-rank structure / many treated cells:** MC-NNM.
 - **Staggered adoption:** C&S (headline) and SA (robustness); run GoodmanBacon to
   show why a naive TWFE differs.
+
+---
+
+## Geo test design (`panelkit.design`)
+
+The planning layer in front of a geo experiment: which markets to treat, how big
+a lift you can detect, which test specification to run, and whether to trust the
+design. Heavy simulation runs in Rust (the `panelkit-geo` crate); the Python
+`GeoDesign` class adds ingest, reports, and figures.
+
+### Loading data
+
+```python
+from panelkit.design import GeoDesign
+
+# (a) straight from an N×T matrix (rows = markets, cols = periods, chronological)
+design = GeoDesign(Y, names=market_names)
+
+# (b) from a long/tidy DataFrame — robust to messy dtypes, no pre-cleaning needed
+design = GeoDesign.from_long(df, location="dma", time="week", outcome="sales")
+```
+
+`from_long` is deliberately forgiving of real-world data:
+
+| issue | what `from_long` does |
+|---|---|
+| outcome stored as strings (`"1234.5"`) | coerced to numeric |
+| genuinely non-numeric outcome (`"N/A"`, `"1,234"`) | **errors** with the offending value |
+| dates as strings (`"2024-01-07"`) or unsorted | parsed to datetime, columns ordered chronologically |
+| non-date periods (ints, labels) | ordered numerically, else lexically |
+| location as ints/categoricals | cast to string market names |
+| duplicate (location, time) rows | aggregated (`agg="sum"` default) with a warning |
+| missing (market × period) cells | **errors**, reporting how many are missing |
+
+The panel must end up **balanced and finite**; the errors tell you exactly what
+to fix.
+
+### Power analysis — `design.power(treated, test_len, …)`
+
+Historical placebo with injected multiplicative lift on your real panel, across
+SC / ASC / SDID. Returns a report with:
+
+- **MDE three ways**: `% lift`, `absolute` per-period, and `cumulative` over the
+  window, each with confidence intervals.
+- a **0–100 confidence score**, a one-line **verdict**, and plain-language
+  **warnings** (weak fit, volatility, seasonality, holdout, donor count).
+- `rep.summary()` (text) and `rep.plot(path)` (3-panel figure: power curves,
+  estimate-accuracy CI, design-quality bars).
+
+Key options: `alpha` (significance level, default 0.10), `target_power`
+(default 0.80), `lifts` (the % grid), `methods`, `recommended` (default SDID).
+
+### Choosing a specification — `design.recommend(test_lengths, n_geos_options, target_lift, alphas=…)`
+
+Sweeps designs across **test length × number of geos × alpha** and recommends the
+best (smallest MDE among trustworthy designs, ties broken toward shorter/cheaper).
+`grid.summary()` prints the recommendation + alternatives; `grid.plot(path)`
+renders the **tradeoffs figure** (MDE vs length per #geos, an MDE heatmap over
+length × #geos, and alpha sensitivity). Use it to find the "knee" — the cheapest
+design that still detects your target lift.
+
+### Picking markets — `design.select_markets(test_len, target_lift, max_treated, …)`
+
+Searches candidate treatment-market sets and ranks them by power, MDE, pre-fit,
+holdout, and confidence. Pass `eligible=[…]` to restrict to markets you can
+actually run in.
+
+### What it adds over GeoLift
+
+Multi-method (SC/ASC/SDID, not just augmented SCM), MDE in %/absolute/cumulative
+with CIs, an explicit confidence score + verdict, seasonality/stability/holdout
+guardrails with plain-English warnings, a specification-tradeoff sweep, and
+publication-clean figures out of the box.

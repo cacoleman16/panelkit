@@ -190,6 +190,74 @@ fn callaway_not_yet_treated_works_without_never_treated() {
 }
 
 #[test]
+fn covariate_adjustment_reduces_confounding_bias() {
+    // Confound: each unit's untreated trend slope ∝ a covariate x, and treated
+    // units have systematically higher x than controls. Plain C&S attributes the
+    // steeper treated trend to the treatment (biased up); regression-adjusting on
+    // x removes it.
+    let mut rng = Xoshiro256pp::seed_from_u64(2027);
+    let per = 40usize;
+    let n = per * 2; // group 0 = control (low x), group 1 = treated cohort (high x)
+    let t = 16usize;
+    let g = 8usize;
+    let true_eff = 2.0;
+
+    let mut x = vec![0.0; n];
+    let mut starts = vec![None; n];
+    let mut y = Mat::zeros(n, t);
+    for i in 0..n {
+        let treated = i >= per;
+        x[i] = if treated { 2.0 } else { 0.0 } + 0.5 * rng.next_normal();
+        let unit_fe = 5.0 + rng.next_normal();
+        let slope = 0.3 * x[i]; // trend depends on covariate → confound
+        if treated {
+            starts[i] = Some(g);
+        }
+        for p in 0..t {
+            let mut v = unit_fe + slope * p as f64 + 0.05 * rng.next_normal();
+            if treated && p >= g {
+                v += true_eff;
+            }
+            y.set(i, p, v);
+        }
+    }
+    let xmat = Mat::from_col_vec(&x); // N×1 covariate
+    let panel = Panel::new(y, starts).with_covariates(xmat);
+
+    let simple = fit_callaway_with(&panel, ControlGroup::NeverTreated).overall_att;
+    // covariate-adjusted: covariates are attached, so fit uses regression adjustment
+    let adjusted = fit_callaway_with(&panel, ControlGroup::NeverTreated).overall_att;
+    // NOTE: fit_callaway_with auto-uses covariates when present, so to compare we
+    // fit the simple version on a covariate-free copy.
+    let panel_nocov = {
+        let mut yy = Mat::zeros(n, t);
+        for i in 0..n {
+            for p in 0..t {
+                yy.set(i, p, panel.outcome(i, p));
+            }
+        }
+        let mut st = vec![None; n];
+        for i in per..n {
+            st[i] = Some(g);
+        }
+        Panel::new(yy, st)
+    };
+    let simple_nocov = fit_callaway_with(&panel_nocov, ControlGroup::NeverTreated).overall_att;
+
+    let _ = simple;
+    let err_adj = (adjusted - true_eff).abs();
+    let err_simple = (simple_nocov - true_eff).abs();
+    assert!(
+        err_adj < err_simple,
+        "covariate adjustment should reduce bias: adj err {err_adj} vs simple err {err_simple} (adj={adjusted}, simple={simple_nocov}, true={true_eff})"
+    );
+    assert!(
+        err_adj < 0.5,
+        "covariate-adjusted estimate {adjusted} not close to {true_eff}"
+    );
+}
+
+#[test]
 fn bacon_decomposition_reproduces_twfe() {
     // The decomposition's weighted average of 2x2 estimates must equal the TWFE
     // coefficient — the strongest correctness check.
