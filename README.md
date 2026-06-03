@@ -174,8 +174,8 @@ valid inference for each estimator.
 
 `panelkit.design` is the planning layer in front of a geo experiment —
 multi-method and robustness-first, with the heavy simulation in Rust. It answers:
-**which markets should I treat, how big a lift can I detect, and can I trust this
-design?**
+**which markets should I treat, how big a lift can I detect, can I trust this
+design — and, once it's run, how big was the effect?**
 
 ```python
 from panelkit.design import GeoDesign
@@ -194,6 +194,17 @@ guard.plot("guardrails.png")  # the guardrails figure below
 
 # let it pick the markets for you:
 ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3)
+
+# run several disjoint treatment cells at once (each vs. a shared donor pool):
+mc = design.multi_cell(cells={"west": ["los_angeles", "san_diego"],
+                              "east": ["boston", "philadelphia"]}, test_len=8)
+print(mc.summary())           # per-cell MDE / confidence / holdout
+mc.plot("multicell.png")      # the multi-cell figure below
+
+# already ran the test? measure it (SC/ASC/SDID + a weighted-average ensemble):
+ev = design.evaluate(treated=["chicago", "denver"], treat_start=52)
+print(ev.summary())           # per-method + ensemble lift, CI, cumulative
+ev.plot("evaluate.png")       # observed vs counterfactual + lift-by-method
 
 # or sweep specifications (length × #geos × significance) and recommend one:
 grid = design.recommend(test_lengths=[4, 6, 8, 12], n_geos_options=[3, 5, 10, 20],
@@ -217,6 +228,21 @@ tradeoffs (MDE vs length per #geos, an intuitive heatmap, and alpha sensitivity)
 
 ![specification tradeoffs](assets/geo_scenarios.png)
 
+**Multi-cell tests.** `multi_cell(...)` runs several disjoint treatment cells
+simultaneously — each measured against a shared donor pool that excludes *every*
+cell's treated markets, so cells never borrow each other as controls. You get a
+per-cell MDE/confidence/holdout report and a combined figure:
+
+![multi-cell test](assets/geo_multicell.png)
+
+**Evaluate a test that ran.** `evaluate(...)` is the measurement counterpart to
+the power analysis: fit SC / ASC / SDID on a test that already happened, blend
+them into a weighted-average **ensemble** estimate, and report each one's lift,
+confidence interval (stationary block bootstrap), and cumulative incremental —
+with an SC in-space placebo p-value:
+
+![test evaluation](assets/geo_evaluate.png)
+
 **Messy DataFrame? No problem.** `from_long` coerces real-world data: outcome
 strings → numeric (with a clear error on genuinely non-numeric values), dates
 (string or unsorted) → chronological columns, locations → market names, duplicate
@@ -238,6 +264,12 @@ What you get out of the box:
   go/no-go.
 - **Market selection** that searches candidate treatment sets and ranks them by
   power, MDE, fit, holdout, and confidence.
+- **Multi-cell tests** — several disjoint treatment cells powered at once against
+  a shared donor pool, with a per-cell MDE/confidence report.
+- **A weighted-average ensemble** of SC + ASC + SDID (combined per placebo window,
+  with auto inverse-variance weights) for a steadier estimate than any one method.
+- **Post-test evaluation** — `evaluate()` measures a test that already ran:
+  per-method + ensemble lift, bootstrap CIs, cumulative incremental, and a p-value.
 
 See [`examples/geo_demo.py`](examples/geo_demo.py).
 

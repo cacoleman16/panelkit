@@ -9,6 +9,9 @@ pub enum Method {
     Asc,
     /// Synthetic Difference-in-Differences.
     Sdid,
+    /// Weighted average of SC + ASC + SDID (a model-averaging ensemble). Not a
+    /// single fit — produced only by the ensemble power/evaluate paths.
+    Ensemble,
 }
 
 impl Method {
@@ -17,6 +20,7 @@ impl Method {
             Method::Sc => "SC",
             Method::Asc => "ASC",
             Method::Sdid => "SDID",
+            Method::Ensemble => "ENSEMBLE",
         }
     }
 }

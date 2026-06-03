@@ -252,7 +252,20 @@ SC / ASC / SDID. Returns a report with:
 
 Key options: `alpha` (significance level, default 0.10), `target_power`
 (default 0.80), `lifts` (the % grid), `methods`, `recommended` (default SDID),
-`lookback`.
+`lookback`, `ensemble`/`ensemble_weights`.
+
+**The ENSEMBLE method (weighted average of SC + ASC + SDID).** By default
+`power()` adds an `"ENSEMBLE"` result alongside the three base methods: a
+weighted average of their ATTs, combined *within each placebo window* before the
+null and power are computed. (That ordering matters — the power of the averaged
+estimator is not the average of three powers; the blend is usually steadier than
+any single method, so its MDE is often the smallest.) `ensemble_weights="auto"`
+(default) uses **inverse-variance** weighting — each method weighted by the
+precision of its historical-null distribution, so a noisier estimator counts for
+less. Pass `"equal"`, a dict like `{"SC": 0.5, "ASC": 0.2, "SDID": 0.3}`, or a
+`[w_sc, w_asc, w_sdid]` list to set them yourself; `ensemble=False` turns it off.
+The weights used are printed in the report and stored on
+`rep.results["ENSEMBLE"].ensemble_weights`.
 
 **How power is simulated (many placebos, not one).** For a treated set, the test
 window of length `test_len` is *slid across the whole history*: every valid start
@@ -271,6 +284,29 @@ noisier estimate). It matters when older history is unrepresentative (regime
 change, growth, format changes) or when early windows have very short pre-periods;
 set `lookback` to cover your relevant recent history (e.g. the last ~6–12
 months of windows).
+
+### Evaluating a test that ran — `design.evaluate(treated, treat_start, …)`
+
+`power()` *plans* a test; `evaluate()` *measures* one. Given the treated markets
+and the period treatment began (`treat_start`, the first post-period column), it
+fits SC / ASC / SDID, reports each one's realized effect, and blends them into a
+weighted-average **ensemble** estimate.
+
+```python
+ev = design.evaluate(treated=["chicago", "denver"], treat_start=52, level=0.90)
+print(ev.summary())          # per-method + ensemble lift, CI, cumulative
+ev.plot("evaluate.png")      # observed-vs-counterfactual, effect path, lift bar
+ev.lift, ev.cumulative, ev.significant
+```
+
+Each estimate gets a confidence interval from a **stationary block bootstrap** of
+its post-period effect path; an **SC in-space placebo** supplies a p-value. The
+ensemble uses the same `weights` choices as `power()` (`"auto"` = inverse-variance
+from each method's bootstrap SE, `"equal"`, or an explicit dict/list). `ev` exposes
+`.lift`, `.att`, `.cumulative`, `.significant`, the per-method results in `ev.per`,
+and the ensemble in `ev.ensemble`. Reported numbers: **% lift** (effect ÷
+counterfactual), **per-period ATT**, and **cumulative incremental** over the
+window (summed across treated markets).
 
 ### Choosing a specification — `design.recommend(test_lengths, n_geos_options, target_lift, alphas=…)`
 
@@ -309,10 +345,40 @@ Searches candidate treatment-market sets and ranks them by power, MDE, pre-fit,
 holdout, and confidence. Pass `eligible=[…]` to restrict to markets you can
 actually run in.
 
+### Multi-cell tests — `design.multi_cell(cells, test_len, …)`
+
+Often you run several treatment cells at once — different creatives, budgets, or
+messages across disjoint groups of markets — and want each cell's lift measured
+separately. The subtlety is the control pool: a market that's treated in one cell
+can't be a clean control for another. `multi_cell` handles this by powering each
+cell against a **shared donor pool that excludes every cell's treated markets**.
+
+```python
+mc = design.multi_cell(
+    cells={
+        "West":      ["los_angeles", "san_diego"],
+        "Midwest":   ["chicago", "detroit"],
+        "Northeast": ["boston", "philadelphia"],
+    },
+    test_len=8, alpha=0.10,
+)
+print(mc.summary())          # per-cell MDE / confidence / holdout + combined holdout
+mc.plot("multicell.png")     # per-cell power curves + an MDE-by-cell bar
+```
+
+`cells` maps a label to its markets (names or indices) and must be disjoint. By
+default the donor pool is every market not assigned to any cell; pass
+`shared_donors=[…]` to fix it explicitly. `lifts`, `methods`, `alpha`,
+`target_power`, `recommended`, and `lookback` are forwarded to each cell's power
+analysis. The report exposes `mc.cells[label]` (a full power report per cell) and
+a combined holdout across all cells. Bigger cells get a smaller MDE; underpowered
+cells are flagged so you can grow or merge them before spending.
+
 ### What the design layer gives you
 
-Multi-method power (SC/ASC/SDID with a recommended method, plus a naive-DiD
-baseline), MDE in %/absolute/cumulative with CIs, an explicit 0–100 confidence
-score + one-line verdict, seasonality/stability/holdout guardrails with
-plain-English warnings, a specification-tradeoff sweep, and publication-clean
-figures out of the box.
+Multi-method power (SC/ASC/SDID plus a weighted-average **ensemble** and a
+naive-DiD baseline), MDE in %/absolute/cumulative with CIs, an explicit 0–100
+confidence score + one-line verdict, seasonality/stability/holdout guardrails with
+plain-English warnings, a specification-tradeoff sweep, multi-cell designs,
+**post-test evaluation** (`evaluate()`), and publication-clean figures out of the
+box.

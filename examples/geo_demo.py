@@ -93,7 +93,49 @@ grid.plot("assets/geo_scenarios.png")
 print("\nwrote assets/geo_scenarios.png")
 
 # ===========================================================================
-# 4) Robust DataFrame ingest: messy dtypes are handled.
+# 4) Multi-cell test: several disjoint treatment cells at once.
+# ===========================================================================
+# Real tests often run more than one cell simultaneously (e.g. different
+# creatives or budgets per region). Each cell is powered against a SHARED donor
+# pool that excludes every cell's treated markets — so cells never borrow each
+# other as controls.
+print()
+mc = design.multi_cell(
+    cells={
+        "West":     ["DMA_00", "DMA_01", "DMA_02"],
+        "Midwest":  ["DMA_10", "DMA_11"],
+        "Northeast": ["DMA_20", "DMA_21", "DMA_22", "DMA_23"],
+    },
+    test_len=8,
+    alpha=0.10,
+)
+print(mc.summary())
+mc.plot("assets/geo_multicell.png")
+print("\nwrote assets/geo_multicell.png")
+
+# ===========================================================================
+# 5) Evaluate a test that already ran (post-test measurement).
+# ===========================================================================
+# `power()` plans a test; `evaluate()` measures one. The power report above
+# already includes an ENSEMBLE row — a weighted average of SC + ASC + SDID
+# (auto inverse-variance weights). Here we *run* a synthetic test: inject a known
+# +6% lift on the treated markets over the last 8 periods, then recover it.
+import numpy as _np  # noqa: E402
+
+Y_test = design.Y.copy()
+t_start = design.t - 8
+treated_ids = [design.names.index(m) for m in treated]
+Y_test[treated_ids, t_start:] *= 1.06            # ground-truth +6% lift
+post = GeoDesign(Y_test, names=design.names)
+
+ev = post.evaluate(treated=treated, treat_start=t_start, level=0.90)
+print("\n" + ev.summary())
+print(f"\n(ground truth was +6.0%; ensemble recovered {100*ev.lift:+.2f}%)")
+ev.plot("assets/geo_evaluate.png")
+print("wrote assets/geo_evaluate.png")
+
+# ===========================================================================
+# 6) Robust DataFrame ingest: messy dtypes are handled.
 # ===========================================================================
 try:
     import pandas as pd

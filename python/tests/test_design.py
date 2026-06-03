@@ -24,7 +24,7 @@ def test_power_report_basics():
     Y, names = geo_panel()
     d = GeoDesign(Y, names=names)
     rep = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05, 0.1, 0.2])
-    assert set(rep.results) == {"SC", "ASC", "SDID"}
+    assert {"SC", "ASC", "SDID"} <= set(rep.results)
     assert rep.recommended == "SDID"
     # power rises with lift for the recommended method
     pw = rep.best.power
@@ -83,6 +83,91 @@ def test_market_selection_returns_ranked():
     scores = [c["score"] for c in ranked]
     assert scores == sorted(scores, reverse=True)
     assert all(isinstance(c["markets"][0], str) for c in ranked)
+
+
+def test_multi_cell_basic_and_disjoint(tmp_path):
+    Y, names = geo_panel(n=18, t=60)
+    d = GeoDesign(Y, names=names)
+    mc = d.multi_cell(
+        cells={"A": ["M00", "M01"], "B": ["M02", "M03"], "C": ["M04"]},
+        test_len=8, alpha=0.10,
+    )
+    assert set(mc.cells) == {"A", "B", "C"}
+    # each cell measured against the shared pool, donors exclude all treated
+    assert len(mc.donor_names) == 18 - 5
+    assert all(nm not in {"M00", "M01", "M02", "M03", "M04"} for nm in mc.donor_names)
+    # the other cells' markets are NOT in this cell's donor pool / treated set
+    assert mc.cells["A"].treated_names == ["M00", "M01"]
+    assert 0 < mc.pooled_holdout < 1
+    s = mc.summary()
+    assert "MULTI-CELL" in s and "A" in s and "B" in s
+    out = tmp_path / "mc.png"
+    mc.plot(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_multi_cell_rejects_overlap_and_empty_donors():
+    Y, names = geo_panel(n=6, t=40)
+    d = GeoDesign(Y, names=names)
+    # overlapping cells
+    with pytest.raises(ValueError, match="disjoint"):
+        d.multi_cell(cells={"A": ["M00", "M01"], "B": ["M01"]}, test_len=6)
+    # donors overlap a cell
+    with pytest.raises(ValueError, match="overlaps"):
+        d.multi_cell(cells={"A": ["M00"]}, test_len=6, shared_donors=["M00", "M01"])
+    # no markets left for the control pool
+    with pytest.raises(ValueError, match="donor"):
+        d.multi_cell(cells={"A": [f"M0{i}" for i in range(6)]}, test_len=6)
+
+
+def test_power_ensemble_present_and_weighted():
+    Y, names = geo_panel()
+    d = GeoDesign(Y, names=names)
+    rep = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05, 0.1])
+    assert "ENSEMBLE" in rep.results
+    ens = rep.results["ENSEMBLE"]
+    w = ens.ensemble_weights
+    assert w is not None and len(w) == 3
+    assert abs(sum(w) - 1.0) < 1e-9 and all(x >= 0 for x in w)
+    # equal weights honored
+    eq = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
+                 ensemble_weights="equal").results["ENSEMBLE"].ensemble_weights
+    assert all(abs(x - 1 / 3) < 1e-9 for x in eq)
+    # dict weights honored (normalized)
+    dd = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
+                 ensemble_weights={"SC": 2, "ASC": 1, "SDID": 1}).results["ENSEMBLE"].ensemble_weights
+    assert abs(dd[0] - 0.5) < 1e-9
+    # can be turned off
+    off = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1], ensemble=False)
+    assert "ENSEMBLE" not in off.results
+
+
+def test_evaluate_recovers_injected_lift(tmp_path):
+    Y, names = geo_panel(n=20, t=72)
+    # inject a clean +8% lift on the well-fit market over the last 12 periods
+    Yt = Y.copy()
+    Yt[0, 60:] *= 1.08
+    d = GeoDesign(Yt, names=names)
+    ev = d.evaluate(treated=["M00"], treat_start=60, level=0.90)
+    assert set(ev.per) == {"SC", "ASC", "SDID"}
+    # ensemble lift in the right ballpark and detected
+    assert 0.04 < ev.lift < 0.12
+    assert ev.significant
+    assert abs(sum(ev.ensemble["weights"].values()) - 1.0) < 1e-9
+    s = ev.summary()
+    assert "GEO TEST EVALUATION" in s and "ENSEMBLE" in s
+    out = tmp_path / "eval.png"
+    ev.plot(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_evaluate_validates_inputs():
+    Y, names = geo_panel(n=8, t=40)
+    d = GeoDesign(Y, names=names)
+    with pytest.raises(ValueError, match="treat_start"):
+        d.evaluate(treated=["M00"], treat_start=0)
+    with pytest.raises(ValueError, match="unknown methods"):
+        d.evaluate(treated=["M00"], treat_start=30, methods=["SC", "XYZ"])
 
 
 def test_unknown_market_raises():

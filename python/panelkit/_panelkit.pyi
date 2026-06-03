@@ -128,6 +128,7 @@ class PowerResult:
     crit: float
     se_null: float
     n_windows: int
+    ensemble_weights: Optional[list[float]]
     def __repr__(self) -> str: ...
 
 class GeoDiagnostics:
@@ -161,6 +162,17 @@ def geo_power(
     target_power: float = ...,
     min_pre: int = ...,
     lookback: Optional[int] = ...,
+) -> PowerResult: ...
+def geo_power_ensemble(
+    y: npt.NDArray[np.float64],
+    treated: Sequence[int],
+    test_len: int,
+    lifts: Sequence[float],
+    alpha: float = ...,
+    target_power: float = ...,
+    min_pre: int = ...,
+    lookback: Optional[int] = ...,
+    weights: Optional[Sequence[float]] = ...,
 ) -> PowerResult: ...
 def geo_diagnostics(
     y: npt.NDArray[np.float64], treated: Sequence[int], test_len: int

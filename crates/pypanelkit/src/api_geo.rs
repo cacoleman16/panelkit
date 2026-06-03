@@ -3,7 +3,7 @@
 use numpy::PyReadonlyArray2;
 use panelkit_geo::selection::{select_markets, SelectConfig};
 use panelkit_geo::types::Method;
-use panelkit_geo::{diagnostics, power_curve};
+use panelkit_geo::{diagnostics, power_curve, power_curve_ensemble};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -70,6 +70,79 @@ pub fn geo_power(
         crit: pr.crit,
         se_null: pr.se_null,
         n_windows: pr.n_windows,
+        ensemble_weights: None,
+    })
+}
+
+/// Power analysis for a **weighted-average ensemble** of SC + ASC + SDID.
+///
+/// `weights` is `[w_sc, w_asc, w_sdid]`; `None` uses data-driven inverse-variance
+/// weights from each method's historical-null spread. The estimators are combined
+/// per placebo window before power is computed.
+#[pyfunction]
+#[pyo3(signature = (y, treated, test_len, lifts, alpha=0.1, target_power=0.8, min_pre=0, lookback=None, weights=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn geo_power_ensemble(
+    py: Python<'_>,
+    y: PyReadonlyArray2<f64>,
+    treated: Vec<usize>,
+    test_len: usize,
+    lifts: Vec<f64>,
+    alpha: f64,
+    target_power: f64,
+    min_pre: usize,
+    lookback: Option<usize>,
+    weights: Option<Vec<f64>>,
+) -> PyResult<PyPowerResult> {
+    let w = match weights {
+        None => None,
+        Some(v) => {
+            if v.len() != 3 {
+                return Err(PyValueError::new_err(
+                    "weights must have exactly 3 entries: [w_sc, w_asc, w_sdid]",
+                ));
+            }
+            if v.iter().any(|x| *x < 0.0 || !x.is_finite()) {
+                return Err(PyValueError::new_err(
+                    "weights must be finite and non-negative",
+                ));
+            }
+            Some([v[0], v[1], v[2]])
+        }
+    };
+    let mat = mat_from_numpy(&y);
+    let min_pre = if min_pre == 0 {
+        test_len.max(2)
+    } else {
+        min_pre
+    };
+    let (pr, used) = py.allow_threads(move || {
+        power_curve_ensemble(
+            &mat,
+            &treated,
+            test_len,
+            &lifts,
+            alpha,
+            target_power,
+            min_pre,
+            lookback,
+            w,
+        )
+    });
+    Ok(PyPowerResult {
+        method: pr.method.name().to_string(),
+        lifts: pr.points.iter().map(|p| p.lift_pct).collect(),
+        power: pr.points.iter().map(|p| p.power).collect(),
+        est_mean: pr.points.iter().map(|p| p.est_pct_mean).collect(),
+        est_lo: pr.points.iter().map(|p| p.est_pct_lo).collect(),
+        est_hi: pr.points.iter().map(|p| p.est_pct_hi).collect(),
+        mde_pct: pr.mde_pct,
+        mde_abs_per_period: pr.mde_abs_per_period,
+        mde_cumulative: pr.mde_cumulative,
+        crit: pr.crit,
+        se_null: pr.se_null,
+        n_windows: pr.n_windows,
+        ensemble_weights: Some(used.to_vec()),
     })
 }
 

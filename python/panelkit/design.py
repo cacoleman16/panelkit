@@ -13,6 +13,9 @@ report with professional graphs — the planning layer in front of a geo test.
     rep.plot("power.png")
 
     ranked = design.select_markets(test_len=4, target_lift=0.05, max_treated=3)
+
+    # several disjoint treatment cells at once, each vs. a shared donor pool:
+    mc = design.multi_cell(cells={"a": ["chicago"], "b": ["denver"]}, test_len=4)
 """
 
 from __future__ import annotations
@@ -24,7 +27,29 @@ import numpy as np
 from . import _panelkit
 
 _METHODS = ("SC", "ASC", "SDID")
+_ENSEMBLE_ORDER = ("SC", "ASC", "SDID")  # weight order expected by the Rust ensemble
 _DEFAULT_LIFTS = [0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.15, 0.20]
+
+
+def _ensemble_weight_arg(spec):
+    """Turn an ensemble-weights spec into the ``[w_sc, w_asc, w_sdid]`` list the
+    Rust ensemble expects, or ``None`` for data-driven ("auto") weighting."""
+    if spec is None or (isinstance(spec, str) and spec.lower() == "auto"):
+        return None
+    if isinstance(spec, str):
+        if spec.lower() == "equal":
+            return [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]
+        raise ValueError(f"unknown ensemble_weights {spec!r} (use 'auto', 'equal', "
+                         "a dict, or a 3-list)")
+    if isinstance(spec, dict):
+        w = [float(spec.get(m, spec.get(m.lower(), 0.0))) for m in _ENSEMBLE_ORDER]
+    else:
+        w = [float(x) for x in spec]
+        if len(w) != 3:
+            raise ValueError("ensemble_weights list must be [w_sc, w_asc, w_sdid]")
+    if any(x < 0 for x in w) or sum(w) <= 0:
+        raise ValueError("ensemble_weights must be non-negative and sum to > 0")
+    return w
 
 
 class _PowerReport:
@@ -92,7 +117,12 @@ class _PowerReport:
         for m in self.results:
             r = self.results[m]
             mde = f"{100*r.mde_pct:.2f}%" if r.mde_pct is not None else "—"
-            lines.append(f"   {m:<5} MDE {mde:>7}   (pre-fit null SE {r.se_null:.3g}, {r.n_windows} windows)")
+            lines.append(f"   {m:<8} MDE {mde:>7}   (pre-fit null SE {r.se_null:.3g}, {r.n_windows} windows)")
+        ens = self.results.get("ENSEMBLE")
+        if ens is not None and ens.ensemble_weights is not None:
+            wstr = ", ".join(f"{nm} {100*w:.0f}%"
+                             for nm, w in zip(_ENSEMBLE_ORDER, ens.ensemble_weights))
+            lines.append(f"   ENSEMBLE weights: {wstr}")
         lines.append("")
         lines.append("Diagnostics:")
         lines.append(f"   • Pre-period fit (relative RMSPE): {d.pre_fit_rel:.2f}  "
@@ -332,12 +362,21 @@ class GeoDesign:
         target_power: float = 0.80,
         recommended: str = "SDID",
         lookback: int | None = None,
+        ensemble: bool = True,
+        ensemble_weights="auto",
     ) -> _PowerReport:
         """Power analysis for a specified treated-market set across methods.
 
         Powers over many historical placebo windows (sliding the test window
         across history); ``lookback=k`` restricts to the most-recent ``k`` windows,
-        which are most representative of the upcoming test."""
+        which are most representative of the upcoming test.
+
+        When ``ensemble=True`` (default) an extra ``"ENSEMBLE"`` result is added: a
+        weighted average of SC + ASC + SDID combined *per placebo window* (so its
+        power reflects the averaged estimator, which is usually steadier than any
+        one method). ``ensemble_weights`` is ``"auto"`` (data-driven inverse-variance
+        weighting from each method's historical-null spread), ``"equal"``, or a dict
+        like ``{"SC": 0.5, "ASC": 0.2, "SDID": 0.3}``."""
         idx = self._resolve(treated)
         names = [self.names[i] for i in idx]
         lifts = list(_DEFAULT_LIFTS if lifts is None else lifts)
@@ -349,6 +388,11 @@ class GeoDesign:
         for m in methods:
             results[m] = _panelkit.geo_power(
                 self.Y, idx, int(test_len), lifts, m.lower(), alpha, target_power, 0, lb
+            )
+        if ensemble:
+            w = _ensemble_weight_arg(ensemble_weights)
+            results["ENSEMBLE"] = _panelkit.geo_power_ensemble(
+                self.Y, idx, int(test_len), lifts, alpha, target_power, 0, lb, w
             )
         diag = _panelkit.geo_diagnostics(self.Y, idx, int(test_len))
         rec = recommended if recommended in results else list(results)[0]
@@ -461,6 +505,231 @@ class GeoDesign:
         return _ScenarioGrid(rows, target_lift, target_power, list(alphas),
                              list(test_lengths), list(n_geos_options), min_confidence)
 
+    def multi_cell(
+        self,
+        cells: "dict",
+        test_len: int,
+        *,
+        shared_donors=None,
+        lifts: Sequence[float] | None = None,
+        methods: Sequence[str] = _METHODS,
+        alpha: float = 0.10,
+        target_power: float = 0.80,
+        recommended: str = "SDID",
+        lookback: int | None = None,
+    ) -> "_MultiCellReport":
+        """Power a **simultaneous multi-cell** geo test.
+
+        A multi-cell test runs several *disjoint* treatment cells at the same time
+        — e.g. cell "A" gets one creative/budget and cell "B" another — and
+        measures each cell's lift separately. The catch is the control pool: a
+        market that is treated in one cell can't serve as a clean control for
+        another. ``multi_cell`` handles this for you by powering each cell against
+        a **shared donor pool** that excludes *every* cell's treated markets.
+
+        Parameters
+        ----------
+        cells : dict[str, list]
+            Maps a cell label to its treated markets (names or indices). Cells
+            must be disjoint.
+        test_len : int
+            Test-window length, in periods (shared across cells).
+        shared_donors : list, optional
+            Markets to use as the common control pool. Defaults to every market
+            not assigned to any cell. May not overlap any cell.
+        lifts, methods, alpha, target_power, recommended, lookback :
+            Passed through to :meth:`power` for each cell.
+
+        Returns
+        -------
+        _MultiCellReport
+            Per-cell power reports plus a combined ``.summary()`` and a combined
+            ``.plot(path)`` (per-cell power curves + an MDE-by-cell bar).
+        """
+        if not cells:
+            raise ValueError("multi_cell needs at least one cell")
+        cell_idx = {label: self._resolve(mkts) for label, mkts in cells.items()}
+        for label, idx in cell_idx.items():
+            if len(set(idx)) != len(idx):
+                raise ValueError(f"cell {label!r} lists a market more than once")
+        # Cells must be disjoint.
+        seen = {}
+        for label, idx in cell_idx.items():
+            for i in idx:
+                if i in seen:
+                    raise ValueError(
+                        f"market {self.names[i]!r} is in both cell {seen[i]!r} and "
+                        f"cell {label!r} — cells must be disjoint"
+                    )
+                seen[i] = label
+        treated_all = set(seen)
+
+        if shared_donors is not None:
+            donors = self._resolve(shared_donors)
+            clash = sorted(set(donors) & treated_all)
+            if clash:
+                raise ValueError(
+                    "shared_donors overlaps treated cells: "
+                    + ", ".join(self.names[i] for i in clash)
+                )
+        else:
+            donors = [i for i in range(self.n) if i not in treated_all]
+        donors = sorted(set(donors))
+        if not donors:
+            raise ValueError(
+                "no donor markets left for the control pool — leave some markets "
+                "out of the cells or pass shared_donors"
+            )
+
+        reports = {}
+        for label, idx in cell_idx.items():
+            # A sub-panel of just this cell + the shared donors, so the other
+            # cells' markets are never used as controls.
+            subset = list(idx) + [d for d in donors if d not in idx]
+            sub = GeoDesign(self.Y[subset], names=[self.names[i] for i in subset])
+            local_treated = list(range(len(idx)))  # cell markets are first in subset
+            reports[label] = sub.power(
+                treated=local_treated, test_len=int(test_len), lifts=lifts,
+                methods=methods, alpha=alpha, target_power=target_power,
+                recommended=recommended, lookback=lookback,
+            )
+            # Restore real market names on the sub-report for display.
+            reports[label].treated_names = [self.names[i] for i in idx]
+
+        donor_names = [self.names[i] for i in donors]
+        total_vol = float(np.abs(self.Y).sum())
+        treated_vol = float(np.abs(self.Y[sorted(treated_all)]).sum())
+        pooled_holdout = treated_vol / total_vol if total_vol > 0 else float("nan")
+        return _MultiCellReport(reports, donor_names, test_len, alpha,
+                                target_power, pooled_holdout)
+
+    def evaluate(
+        self,
+        treated,
+        treat_start: int,
+        methods: Sequence[str] = _METHODS,
+        weights="auto",
+        level: float = 0.90,
+        n_boot: int = 2000,
+        block_len: int = 4,
+        seed: int = 0,
+    ) -> "_EvalReport":
+        """Estimate the realized effect of a geo test that has **already run**.
+
+        This is the measurement counterpart to :meth:`power`: given the treated
+        markets and the period treatment began (``treat_start``, the first
+        post-period column), it fits SC / ASC / SDID, reports each one's effect,
+        and combines them into a weighted-average **ensemble** estimate. Each
+        estimate gets a confidence interval from a stationary block bootstrap of
+        its post-period effect path; an SC in-space placebo supplies a p-value.
+
+        Parameters
+        ----------
+        treated : list
+            Treated markets (names or indices).
+        treat_start : int
+            First treated period (column index) — the test start.
+        methods : sequence of {"SC","ASC","SDID"}
+            Which estimators to fit and blend.
+        weights : "auto" | "equal" | dict
+            Ensemble weighting. ``"auto"`` is inverse-variance (precision)
+            weighting from each method's bootstrap standard error.
+        level : float
+            Confidence level for the intervals (e.g. 0.90).
+        n_boot, block_len, seed :
+            Stationary-bootstrap settings for the effect-path CIs.
+
+        Returns
+        -------
+        _EvalReport
+            With ``.summary()``, ``.plot(path)``, per-method results, and the
+            ensemble point estimate / interval / lift.
+        """
+        idx = self._resolve(treated)
+        names = [self.names[i] for i in idx]
+        t0 = int(treat_start)
+        if not (1 <= t0 < self.t):
+            raise ValueError(f"treat_start must be in [1, {self.t}); got {t0}")
+        n_treated = len(idx)
+        methods = [m.upper() for m in methods]
+        unknown = [m for m in methods if m not in _METHODS]
+        if unknown:
+            raise ValueError(f"unknown methods {unknown}; choose from {_METHODS}")
+
+        fitters = {
+            "SC": lambda: _panelkit.fit_sc(self.Y, idx, t0, 0.0, False, level),
+            "ASC": lambda: _panelkit.fit_asc(self.Y, idx, t0, 0.0, None),
+            "SDID": lambda: _panelkit.fit_sdid(self.Y, idx, t0, 1.0),
+        }
+        per = {}
+        for m in methods:
+            fit = fitters[m]()
+            att_path = np.asarray(fit.att_path, dtype=float)
+            cf = np.asarray(fit.counterfactual, dtype=float)
+            att = float(fit.att)
+            cf_mean = float(np.mean(cf)) if cf.size else float("nan")
+            se, lo, hi = _panelkit.bootstrap_mean(
+                att_path.tolist(), "stationary", int(block_len), int(n_boot),
+                int(seed), float(level))
+            per[m] = {
+                "att": att, "att_path": att_path, "counterfactual": cf,
+                "cf_mean": cf_mean, "lift": att / cf_mean if cf_mean else float("nan"),
+                "se": se, "att_lo": lo, "att_hi": hi,
+                "lift_lo": lo / cf_mean if cf_mean else float("nan"),
+                "lift_hi": hi / cf_mean if cf_mean else float("nan"),
+                "cumulative": float(att_path.sum()) * n_treated,
+                "pre_rmspe": float(fit.pre_rmspe),
+            }
+
+        # Ensemble: weight-average the post-period effect paths, then summarize.
+        order = methods
+        if isinstance(weights, str) and weights.lower() == "equal":
+            wv = [1.0 / len(order)] * len(order)
+        elif isinstance(weights, str) and weights.lower() == "auto":
+            prec = [1.0 / max(per[m]["se"] ** 2, 1e-300) for m in order]
+            s = sum(prec)
+            wv = [p / s for p in prec] if s > 0 else [1.0 / len(order)] * len(order)
+        elif isinstance(weights, dict):
+            raw = [float(weights.get(m, weights.get(m.lower(), 0.0))) for m in order]
+            s = sum(raw)
+            if s <= 0:
+                raise ValueError("ensemble weights must sum to > 0")
+            wv = [r / s for r in raw]
+        else:
+            raw = [float(x) for x in weights]
+            if len(raw) != len(order) or sum(raw) <= 0:
+                raise ValueError(f"weights must be one non-negative number per method {order}")
+            s = sum(raw)
+            wv = [r / s for r in raw]
+        wmap = dict(zip(order, wv))
+
+        ens_path = sum(wmap[m] * per[m]["att_path"] for m in order)
+        ens_cf_mean = float(sum(wmap[m] * per[m]["cf_mean"] for m in order))
+        ens_att = float(ens_path.mean())
+        se, lo, hi = _panelkit.bootstrap_mean(
+            ens_path.tolist(), "stationary", int(block_len), int(n_boot),
+            int(seed), float(level))
+        ensemble = {
+            "att": ens_att, "att_path": ens_path, "se": se,
+            "att_lo": lo, "att_hi": hi,
+            "lift": ens_att / ens_cf_mean if ens_cf_mean else float("nan"),
+            "lift_lo": lo / ens_cf_mean if ens_cf_mean else float("nan"),
+            "lift_hi": hi / ens_cf_mean if ens_cf_mean else float("nan"),
+            "cumulative": float(ens_path.sum()) * n_treated,
+            "weights": wmap,
+        }
+
+        # Significance: SC in-space placebo p-value, plus a full SC counterfactual
+        # (donor-weight reconstruction) for the timeline plot.
+        sc = _panelkit.fit_sc(self.Y, idx, t0, 0.0, True, level)
+        p_value = sc.p_value
+        donors = np.asarray(sc.donor_ids, dtype=int)
+        w_sc = np.asarray(sc.weights, dtype=float)
+        full_cf = (self.Y[donors].T @ w_sc) if donors.size else np.full(self.t, np.nan)
+        treated_series = self.Y[idx].mean(axis=0)
+        return _EvalReport(names, t0, n_treated, per, ensemble, p_value, level,
+                           treated_series, full_cf)
+
 
 class _ScenarioGrid:
     """Recommendations swept across test length, number of geos, and alpha."""
@@ -537,6 +806,139 @@ class _ScenarioGrid:
                 f"@α{rec['alpha']:.2f}, MDE={100*rec['mde_pct']:.2f}%)")
 
 
+class _MultiCellReport:
+    """Result of a simultaneous multi-cell geo test: one power report per cell,
+    all measured against a shared donor pool, plus a combined view."""
+
+    def __init__(self, cells, donor_names, test_len, alpha, target_power,
+                 pooled_holdout):
+        self.cells = cells                  # dict: label -> _PowerReport
+        self.donor_names = donor_names
+        self.test_len = test_len
+        self.alpha = alpha
+        self.target_power = target_power
+        self.pooled_holdout = pooled_holdout
+
+    def summary(self) -> str:
+        lines = ["=" * 64, "MULTI-CELL GEO TEST DESIGN", "=" * 64]
+        lines.append(f"Cells             : {len(self.cells)} "
+                     f"({', '.join(map(str, self.cells))})")
+        lines.append(f"Test duration     : {self.test_len} periods")
+        lines.append(f"Shared donor pool : {len(self.donor_names)} markets")
+        lines.append(f"Combined holdout  : {100*self.pooled_holdout:.1f}% of total volume")
+        lines.append(f"Powered at {int(100*self.target_power)}% power, "
+                     f"{int(100*(1-self.alpha))}% confidence "
+                     f"(each cell vs. the shared pool).")
+        lines.append("")
+        lines.append(f"{'Cell':<14}{'Markets':<28}{'MDE':>8}{'Conf':>7}{'Holdout':>9}")
+        lines.append("-" * 64)
+        for label, rep in self.cells.items():
+            mkts = ", ".join(map(str, rep.treated_names))
+            if len(mkts) > 26:
+                mkts = mkts[:25] + "…"
+            mde = f"{100*rep.mde_pct:.2f}%" if rep.mde_pct is not None else "—"
+            lines.append(f"{str(label):<14}{mkts:<28}{mde:>8}"
+                         f"{rep.confidence:>6.0f}{100*rep.diagnostics.holdout_pct:>8.1f}%")
+        lines.append("")
+        worst = [l for l, r in self.cells.items() if r.mde_pct is None]
+        if worst:
+            lines.append("⚠ Underpowered cells (no MDE within the lift grid): "
+                         + ", ".join(map(str, worst)))
+            lines.append("  → add markets to those cells, lengthen the test, or "
+                         "merge cells.")
+        else:
+            lines.append("✓ Every cell reaches the target power within the lift grid.")
+        lines.append("=" * 64)
+        return "\n".join(lines)
+
+    def plot(self, path: str | None = None):
+        """Render the multi-cell figure (per-cell power curves + MDE-by-cell bar).
+        Returns the matplotlib Figure; saves to ``path`` if given."""
+        return _plot_multicell(self, path)
+
+    def __repr__(self):
+        bits = []
+        for label, rep in self.cells.items():
+            mde = f"{100*rep.mde_pct:.2f}%" if rep.mde_pct is not None else "n/a"
+            bits.append(f"{label}:MDE={mde}")
+        return f"MultiCellReport({len(self.cells)} cells; " + ", ".join(bits) + ")"
+
+
+class _EvalReport:
+    """Post-test evaluation: per-method effects + a weighted-average ensemble."""
+
+    def __init__(self, treated_names, t0, n_treated, per, ensemble, p_value,
+                 level, treated_series, counterfactual):
+        self.treated_names = treated_names
+        self.t0 = t0
+        self.n_treated = n_treated
+        self.per = per                 # dict: method -> result dict
+        self.ensemble = ensemble       # ensemble result dict (+ "weights")
+        self.p_value = p_value
+        self.level = level
+        self.treated_series = np.asarray(treated_series, dtype=float)
+        self.counterfactual = np.asarray(counterfactual, dtype=float)
+
+    # --- headline numbers (the ensemble) ---
+    @property
+    def lift(self):
+        return self.ensemble["lift"]
+
+    @property
+    def att(self):
+        return self.ensemble["att"]
+
+    @property
+    def cumulative(self):
+        return self.ensemble["cumulative"]
+
+    @property
+    def significant(self):
+        """True if the ensemble CI excludes zero (effect detected)."""
+        lo, hi = self.ensemble["att_lo"], self.ensemble["att_hi"]
+        return (lo > 0) or (hi < 0)
+
+    def summary(self) -> str:
+        cl = int(round(100 * self.level))
+        lines = ["=" * 66, "GEO TEST EVALUATION", "=" * 66]
+        lines.append(f"Treated markets : {', '.join(map(str, self.treated_names))}")
+        lines.append(f"Treatment start : period {self.t0}  "
+                     f"({len(self.treated_series) - self.t0} post periods)")
+        lines.append("")
+        lines.append(f"{'Method':<10}{'lift':>9}{f'  {cl}% CI':>18}{'cumulative':>14}")
+        lines.append("-" * 66)
+        for m, r in self.per.items():
+            ci = f"[{100*r['lift_lo']:+.1f}%, {100*r['lift_hi']:+.1f}%]"
+            lines.append(f"{m:<10}{100*r['lift']:>8.2f}%{ci:>18}{r['cumulative']:>14,.0f}")
+        e = self.ensemble
+        eci = f"[{100*e['lift_lo']:+.1f}%, {100*e['lift_hi']:+.1f}%]"
+        lines.append(f"{'ENSEMBLE':<10}{100*e['lift']:>8.2f}%{eci:>18}{e['cumulative']:>14,.0f}")
+        wstr = ", ".join(f"{m} {100*w:.0f}%" for m, w in e["weights"].items())
+        lines.append(f"   ensemble weights: {wstr}")
+        lines.append("")
+        if self.p_value is not None:
+            lines.append(f"SC in-space placebo p-value : {self.p_value:.3f}")
+        verdict = ("✓ Significant lift — the ensemble interval excludes zero."
+                   if self.significant else
+                   "~ Not distinguishable from zero at this level — the ensemble "
+                   "interval includes zero.")
+        lines.append(f"Headline (ensemble)         : {100*e['lift']:+.2f}% lift, "
+                     f"{e['cumulative']:,.0f} cumulative incremental")
+        lines.append(verdict)
+        lines.append("=" * 66)
+        return "\n".join(lines)
+
+    def plot(self, path: str | None = None):
+        """Render the evaluation figure (observed vs counterfactual, effect path,
+        and a lift-by-method bar). Returns the matplotlib Figure."""
+        return _plot_eval(self, path)
+
+    def __repr__(self):
+        sig = "sig" if self.significant else "ns"
+        return (f"EvalReport(lift={100*self.lift:+.2f}%, "
+                f"cumulative={self.cumulative:,.0f}, {sig})")
+
+
 # --------------------------------------------------------------------------
 # Professional plotting.
 # --------------------------------------------------------------------------
@@ -544,7 +946,9 @@ _PK_BLUE = "#2563eb"
 _PK_GREEN = "#059669"
 _PK_AMBER = "#d97706"
 _PK_GREY = "#9ca3af"
-_METHOD_COLORS = {"SC": _PK_GREY, "ASC": _PK_AMBER, "SDID": _PK_BLUE}
+_PK_PURPLE = "#7c3aed"
+_METHOD_COLORS = {"SC": _PK_GREY, "ASC": _PK_AMBER, "SDID": _PK_BLUE,
+                  "ENSEMBLE": _PK_PURPLE}
 
 
 def _require_mpl():
@@ -861,6 +1265,142 @@ def _plot_guardrails(rep: "_DiagnosticsReport", path):
     fig.text(0.012, -0.02, txt, ha="left", va="top", fontsize=9, bbox=box, wrap=True)
 
     fig.suptitle(f"panelkit · guardrails — confidence {d.confidence:.0f}/100",
+                 fontsize=14, fontweight="bold", x=0.012, ha="left")
+    if path:
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def _plot_multicell(rep: "_MultiCellReport", path):
+    _, plt = _require_mpl()
+
+    labels = list(rep.cells)
+    colors = {lab: _GEO_PALETTE[i % len(_GEO_PALETTE)] for i, lab in enumerate(labels)}
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(13, 5.4),
+                                   gridspec_kw={"width_ratios": [1.5, 1.0]})
+    fig.patch.set_facecolor("white")
+
+    # ---- Left: per-cell power curve (recommended method). ----
+    for lab in labels:
+        r = rep.cells[lab].best
+        x = [100 * l for l in r.lifts]
+        axL.plot(x, r.power, "o-", color=colors[lab], lw=2.2, markersize=4,
+                 label=str(lab))
+    axL.axhline(rep.target_power, ls="--", color="#374151", lw=1.0,
+                label=f"target power {int(100*rep.target_power)}%")
+    axL.set_xlabel("true lift (%)")
+    axL.set_ylabel("power (detection rate)")
+    axL.set_ylim(-0.03, 1.03)
+    axL.set_title("Power by cell (each vs. the shared donor pool)", fontweight="bold")
+    axL.grid(True, alpha=0.25)
+    axL.legend(loc="lower right", framealpha=0.9, title="cell")
+
+    # ---- Right: minimum detectable effect per cell. ----
+    mdes = [rep.cells[lab].mde_pct for lab in labels]
+    finite = [100 * m for m in mdes if m is not None]
+    cap = (max(finite) * 1.25) if finite else 10.0
+    y = list(range(len(labels)))
+    for yi, lab in zip(y, labels):
+        m = rep.cells[lab].mde_pct
+        if m is None:
+            axR.barh(yi, cap, color="#e5e7eb", height=0.6, hatch="//",
+                     edgecolor="#9ca3af")
+            axR.annotate("underpowered", (cap * 0.5, yi), ha="center", va="center",
+                         color="#6b7280", fontweight="bold", fontsize=9)
+        else:
+            axR.barh(yi, 100 * m, color=colors[lab], height=0.6)
+            axR.annotate(f"{100*m:.2f}%", (100 * m, yi), xytext=(4, 0),
+                         textcoords="offset points", va="center",
+                         fontweight="bold", color="#111827")
+    axR.set_yticks(y)
+    axR.set_yticklabels([str(l) for l in labels])
+    axR.invert_yaxis()
+    axR.set_xlim(0, cap)
+    axR.set_xlabel("minimum detectable lift (%)  ·  lower is better")
+    axR.set_title("MDE by cell", fontweight="bold")
+    axR.grid(True, axis="x", alpha=0.25)
+
+    fig.suptitle(f"panelkit · multi-cell test — {len(labels)} cells, "
+                 f"{rep.test_len}-period test, "
+                 f"combined holdout {100*rep.pooled_holdout:.1f}%",
+                 fontsize=14, fontweight="bold", x=0.012, ha="left")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    if path:
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def _plot_eval(rep: "_EvalReport", path):
+    _, plt = _require_mpl()
+    import numpy as _np
+    from matplotlib.gridspec import GridSpec
+
+    T = len(rep.treated_series)
+    t0 = rep.t0
+    x = _np.arange(T)
+    post = x[t0:]
+    cl = int(round(100 * rep.level))
+
+    fig = plt.figure(figsize=(12, 7.6))
+    fig.patch.set_facecolor("white")
+    gs = GridSpec(2, 2, figure=fig, height_ratios=[1.15, 1.0], hspace=0.36, wspace=0.26)
+
+    # ---- A: observed treated vs synthetic counterfactual, post-period gap shaded.
+    ax = fig.add_subplot(gs[0, :])
+    ax.axvspan(t0 - 0.5, T - 0.5, color="#ede9fe", alpha=0.6, label="test window")
+    ax.plot(x, rep.treated_series, color="#111827", lw=2.2, label="treated (actual)")
+    if _np.isfinite(rep.counterfactual).all():
+        ax.plot(x, rep.counterfactual, color=_PK_PURPLE, lw=2.0, ls="--",
+                label="synthetic counterfactual")
+        ax.fill_between(post, rep.treated_series[t0:], rep.counterfactual[t0:],
+                        color=_PK_PURPLE, alpha=0.18, label="estimated effect")
+    ax.axvline(t0 - 0.5, color="#374151", lw=1.0, ls=":")
+    ax.set_title("Did the treated markets beat their counterfactual?", fontweight="bold")
+    ax.set_xlabel("period")
+    ax.set_ylabel("outcome")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best", framealpha=0.9, fontsize=9)
+
+    # ---- B: effect path over the post-period (ensemble + per method). ----
+    axb = fig.add_subplot(gs[1, 0])
+    for m, r in rep.per.items():
+        axb.plot(post, r["att_path"], color=_METHOD_COLORS.get(m, _PK_GREY),
+                 lw=1.3, alpha=0.7, label=m)
+    axb.plot(post, rep.ensemble["att_path"], color=_PK_PURPLE, lw=2.6,
+             label="ENSEMBLE")
+    axb.axhline(0, color="#111827", lw=1.0)
+    axb.set_title("Effect over time (per-period ATT)", fontweight="bold")
+    axb.set_xlabel("period")
+    axb.set_ylabel("treated − counterfactual")
+    axb.grid(True, alpha=0.25)
+    axb.legend(fontsize=8, framealpha=0.9, ncol=2)
+
+    # ---- C: % lift by method + ensemble, with CI bars. ----
+    axc = fig.add_subplot(gs[1, 1])
+    rows = list(rep.per.items()) + [("ENSEMBLE", rep.ensemble)]
+    yy = list(range(len(rows)))
+    for yi, (m, r) in zip(yy, rows):
+        lift = 100 * r["lift"]
+        lo, hi = 100 * r["lift_lo"], 100 * r["lift_hi"]
+        col = _METHOD_COLORS.get(m, _PK_GREY)
+        err = [[lift - lo], [hi - lift]]
+        axc.barh(yi, lift, color=col, height=0.6,
+                 alpha=1.0 if m == "ENSEMBLE" else 0.8)
+        axc.errorbar(lift, yi, xerr=err, fmt="none", ecolor="#111827",
+                     elinewidth=1.4, capsize=4)
+    axc.axvline(0, color="#111827", lw=1.0)
+    axc.set_yticks(yy)
+    axc.set_yticklabels([m for m, _ in rows])
+    axc.invert_yaxis()
+    axc.set_xlabel(f"estimated lift (%)  ·  {cl}% CI")
+    axc.set_title("Lift by method", fontweight="bold")
+    axc.grid(True, axis="x", alpha=0.25)
+
+    pv = f"  ·  SC placebo p={rep.p_value:.3f}" if rep.p_value is not None else ""
+    verdict = "significant" if rep.significant else "not significant"
+    fig.suptitle(f"panelkit · test evaluation — ensemble lift "
+                 f"{100*rep.ensemble['lift']:+.2f}% ({verdict}){pv}",
                  fontsize=14, fontweight="bold", x=0.012, ha="left")
     if path:
         fig.savefig(path, dpi=150, bbox_inches="tight")
