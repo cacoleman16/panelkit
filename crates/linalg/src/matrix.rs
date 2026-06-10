@@ -127,12 +127,18 @@ impl Mat {
         out
     }
 
+    /// Element accessor. Bounds are `debug_assert!`-checked only (these are the
+    /// hot-loop primitives): in release builds a row index past `rows` aliases
+    /// into a neighboring column rather than panicking, so callers own the
+    /// bounds. The slice index still panics when the *flat* offset is past the
+    /// end of the buffer.
     #[inline]
     pub fn get(&self, i: usize, j: usize) -> f64 {
         debug_assert!(i < self.rows && j < self.cols);
         self.data[i + j * self.rows]
     }
 
+    /// See [`Mat::get`] for the (debug-only) bounds contract.
     #[inline]
     pub fn set(&mut self, i: usize, j: usize, v: f64) {
         debug_assert!(i < self.rows && j < self.cols);

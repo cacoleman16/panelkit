@@ -38,9 +38,32 @@ impl Svd {
         let (m0, n0) = a.shape();
         let transposed = m0 < n0;
         // Work on the tall version W (rows >= cols).
-        let w = if transposed { a.transpose() } else { a.clone() };
+        let mut w = if transposed { a.transpose() } else { a.clone() };
         let m = w.rows();
         let n = w.cols();
+
+        // The rotation criterion accumulates raw column inner products, which
+        // overflow for entries ≳ 1e154 (the pair then looks "converged":
+        // inf ≤ inf) and underflow for entries ≲ 1e-160 — both produce silent
+        // wrong singular values. Pre-scale by an exact power of two so the
+        // largest entry is O(1), and undo it on the singular values at the end.
+        let maxabs = w.data.iter().fold(0.0_f64, |acc, &x| acc.max(x.abs()));
+        let scale_exp: i32 = if maxabs > 0.0 && maxabs.is_finite() {
+            let e = maxabs.log2();
+            if !(-100.0..=100.0).contains(&e) {
+                -e.round() as i32
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        if scale_exp != 0 {
+            let f = (scale_exp as f64).exp2();
+            for x in w.data.iter_mut() {
+                *x *= f;
+            }
+        }
 
         let mut u = w; // columns will become U * Σ
         let mut v = Mat::identity(n);
@@ -101,9 +124,18 @@ impl Svd {
             }
         }
 
+        // Undo the power-of-two pre-scaling on the singular values (exact).
+        if scale_exp != 0 {
+            let inv = (-scale_exp as f64).exp2();
+            for sv in s.iter_mut() {
+                *sv *= inv;
+            }
+        }
+
         // Sort singular values (and U, V columns) in non-increasing order.
+        // total_cmp: NaN input must yield NaN output, not a comparator panic.
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&i, &j| s[j].partial_cmp(&s[i]).unwrap());
+        order.sort_by(|&i, &j| s[j].total_cmp(&s[i]));
 
         let mut u_sorted = Mat::zeros(m, n);
         let mut v_sorted = Mat::zeros(n, n);
