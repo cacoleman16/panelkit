@@ -15,6 +15,7 @@ use pyo3::prelude::*;
 
 use crate::convert::mat_from_numpy;
 use crate::results::{PyCpascResult, PyScResult};
+use crate::validate;
 
 /// Assemble a bare [`PyScResult`] (no inference attached) from an [`ScFit`].
 fn result_from_fit(fit: &ScFit) -> PyScResult {
@@ -51,6 +52,11 @@ pub fn fit_sc(
     placebo: bool,
     level: f64,
 ) -> PyResult<PyScResult> {
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
+    validate::check_nonneg("ridge", ridge)?;
+    validate::check_unit_interval("level", level)?;
     let mat = mat_from_numpy(&y);
     let panel = Panel::block(mat, &treated, treat_time);
     let cfg = ScConfig { ridge };
@@ -61,14 +67,13 @@ pub fn fit_sc(
 
     if placebo {
         let pb = sc_placebo(&panel, cfg);
-        result.p_value = Some(pb.p_value);
-        result.inference_distribution = Some(pb.placebo_ratios.clone());
-        // A placebo-based CI on the ATT: use the spread of per-donor placebo
-        // post-period gaps as the null reference. Here we report a percentile
-        // interval of the placebo ATT-equivalent (ratio×pre_rmspe) for context.
-        let draws: Vec<f64> = pb.placebo_ratios.clone();
-        if !draws.is_empty() {
-            let ci = percentile_ci(pb.treated_ratio, &draws, level);
+        // With zero usable placebos (e.g. a single donor) there is no null
+        // distribution: leave p-value / SE as None rather than reporting a
+        // vacuous p = 1.0.
+        if !pb.placebo_ratios.is_empty() {
+            result.p_value = Some(pb.p_value);
+            result.inference_distribution = Some(pb.placebo_ratios.clone());
+            let ci = percentile_ci(pb.treated_ratio, &pb.placebo_ratios, level);
             result.se = Some(ci.se);
         }
     }
@@ -86,6 +91,15 @@ pub fn fit_asc(
     sc_ridge: f64,
     aug_lambda: Option<f64>,
 ) -> PyResult<PyScResult> {
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
+    validate::check_nonneg("sc_ridge", sc_ridge)?;
+    if let Some(l) = aug_lambda {
+        // λ = 0 makes the augmentation Gram singular whenever T_pre > J;
+        // require strictly positive (None = automatic).
+        validate::check_pos("aug_lambda", l)?;
+    }
     let panel = Panel::block(mat_from_numpy(&y), &treated, treat_time);
     let cfg = AscConfig {
         sc_ridge,
@@ -103,6 +117,10 @@ pub fn fit_sdid(
     treat_time: usize,
     zeta_scale: f64,
 ) -> PyResult<PyScResult> {
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
+    validate::check_nonneg("zeta_scale", zeta_scale)?;
     let panel = Panel::block(mat_from_numpy(&y), &treated, treat_time);
     let cfg = SdidConfig { zeta_scale };
     Ok(result_from_fit(&fit_sdid_at(&panel, treat_time, cfg)))
@@ -125,6 +143,19 @@ pub fn fit_mcnnm(
     seed: u64,
     max_rank: Option<usize>,
 ) -> PyResult<PyScResult> {
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
+    if let Some(l) = lambda_ {
+        // λ ≤ 0 collapses SoftImpute to a trivial fixed point ("counterfactual
+        // = the zero fill"); require strictly positive (None = cross-validated).
+        validate::check_pos("lambda_", l)?;
+    }
+    validate::check_min_count("max_iter", max_iter, 1)?;
+    validate::check_pos("tol", tol)?;
+    if let Some(r) = max_rank {
+        validate::check_min_count("max_rank", r, 1)?;
+    }
     let panel = Panel::block(mat_from_numpy(&y), &treated, treat_time);
     let cfg = McnnmConfig {
         lambda: lambda_,
@@ -149,6 +180,12 @@ pub fn bootstrap_mean(
     seed: u64,
     level: f64,
 ) -> PyResult<(f64, f64, f64)> {
+    if series.is_empty() || series.iter().any(|v| !v.is_finite()) {
+        return Err(PyValueError::new_err("series must be non-empty and finite"));
+    }
+    validate::check_min_count("block_len", block_len, 1)?;
+    validate::check_min_count("n_reps", n_reps, 1)?;
+    validate::check_unit_interval("level", level)?;
     let (ci, _draws) = match kind {
         "block" => block_bootstrap_mean(&series, block_len, n_reps, seed, level),
         "stationary" => stationary_bootstrap_mean(&series, block_len, n_reps, seed, level),
@@ -186,6 +223,17 @@ pub fn fit_cpasc(
             )))
         }
     };
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
+    validate::check_nonneg("sc_ridge", sc_ridge)?;
+    if let Some(l) = aug_lambda {
+        validate::check_pos("aug_lambda", l)?;
+    }
+    validate::check_min_count("n_strata", n_strata, 1)?;
+    if let Some(b) = block_len {
+        validate::check_min_count("block_len", b, 1)?;
+    }
     let panel = Panel::block(mat_from_numpy(&y), &treated, treat_time);
     let cfg = CpascConfig {
         asc: AscConfig {
@@ -227,14 +275,29 @@ pub fn fit_many<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let view = y3.as_array();
     let (r, n, t) = (view.shape()[0], view.shape()[1], view.shape()[2]);
+    if r == 0 || n == 0 || t == 0 {
+        return Err(PyValueError::new_err(format!(
+            "panel stack must be non-empty; got shape ({r}, {n}, {t})"
+        )));
+    }
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
 
-    // Build the panels while the GIL is held (we touch the numpy buffer here).
+    // Build the panels while the GIL is held (we touch the numpy buffer here),
+    // checking finiteness in the same pass.
     let mut panels = Vec::with_capacity(r);
     for rr in 0..r {
         let mut m = Mat::zeros(n, t);
         for i in 0..n {
             for j in 0..t {
-                m.set(i, j, view[[rr, i, j]]);
+                let v = view[[rr, i, j]];
+                if !v.is_finite() {
+                    return Err(PyValueError::new_err(format!(
+                        "panel stack contains a non-finite value at [{rr}, {i}, {j}]; \
+                         panelkit requires complete, finite panels"
+                    )));
+                }
+                m.set(i, j, v);
             }
         }
         panels.push(Panel::block(m, &treated, treat_time));

@@ -77,6 +77,16 @@ fn injected_subpanel(y: &Mat, treated: &[usize], s: usize, end: usize, lift: f64
     Panel::block(m, treated, s)
 }
 
+/// `value` as a fraction of `base`, or NaN when the baseline is ~zero (the
+/// "% of baseline" readout is undefined for centered/all-zero panels).
+fn pct_of(value: f64, base: f64) -> f64 {
+    if base.abs() <= f64::EPSILON * 1e3 {
+        f64::NAN
+    } else {
+        value / base
+    }
+}
+
 fn quantile(sorted: &[f64], q: f64) -> f64 {
     let n = sorted.len();
     if n == 0 {
@@ -163,7 +173,7 @@ pub fn power_curve(
         fit_method(&panel, s, method).att
     });
     let mut abs_null: Vec<f64> = null_atts.iter().map(|a| a.abs()).collect();
-    abs_null.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    abs_null.sort_by(f64::total_cmp);
     let crit = quantile(&abs_null, 1.0 - alpha);
     let se_null = std_dev(&null_atts);
 
@@ -179,10 +189,12 @@ pub fn power_curve(
             })
         };
         let power = atts.iter().filter(|a| a.abs() > crit).count() as f64 / n_windows as f64;
-        // Convert level estimates to % of treated baseline.
-        let mut est_pct: Vec<f64> = atts.iter().map(|a| a / base_mean).collect();
+        // Convert level estimates to % of treated baseline. A ~zero baseline
+        // (e.g. a demeaned or all-zero panel) makes "% of baseline" undefined —
+        // report NaN rather than dividing toward ±inf.
+        let mut est_pct: Vec<f64> = atts.iter().map(|a| pct_of(*a, base_mean)).collect();
         let mean_pct = est_pct.iter().sum::<f64>() / est_pct.len() as f64;
-        est_pct.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        est_pct.sort_by(f64::total_cmp);
         points.push(PowerPoint {
             lift_pct: lift,
             power,
@@ -277,7 +289,7 @@ pub fn power_curve_ensemble(
 
     let null_atts: Vec<f64> = null_by_window.iter().map(|&a| combine(a)).collect();
     let mut abs_null: Vec<f64> = null_atts.iter().map(|a| a.abs()).collect();
-    abs_null.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    abs_null.sort_by(f64::total_cmp);
     let crit = quantile(&abs_null, 1.0 - alpha);
     let se_null = std_dev(&null_atts);
 
@@ -296,9 +308,9 @@ pub fn power_curve_ensemble(
             })
         };
         let power = atts.iter().filter(|a| a.abs() > crit).count() as f64 / n_windows as f64;
-        let mut est_pct: Vec<f64> = atts.iter().map(|a| a / base_mean).collect();
+        let mut est_pct: Vec<f64> = atts.iter().map(|a| pct_of(*a, base_mean)).collect();
         let mean_pct = est_pct.iter().sum::<f64>() / est_pct.len() as f64;
-        est_pct.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        est_pct.sort_by(f64::total_cmp);
         points.push(PowerPoint {
             lift_pct: lift,
             power,

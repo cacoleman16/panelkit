@@ -81,6 +81,13 @@ fn seasonality_strength(series: &[f64]) -> (f64, usize) {
 /// the planned window = the last `test_len` periods.
 pub fn diagnostics(y: &Mat, treated: &[usize], test_len: usize) -> Diagnostics {
     let (n, t) = y.shape();
+    // The planned window must leave at least one pre-period (test_len == t
+    // would otherwise produce a vacuous "perfect" design, and test_len > t
+    // would underflow).
+    assert!(
+        test_len >= 1 && test_len < t,
+        "test_len must be in [1, n_periods); got {test_len} with {t} periods"
+    );
     let t0 = t - test_len;
     let controls: Vec<usize> = (0..n).filter(|u| !treated.contains(u)).collect();
 
