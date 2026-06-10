@@ -92,8 +92,8 @@ output in v1).
 ## CP-ASC family (`CPASC`) — novel
 
 For experiments with **several treated units**, fit one augmented SC per treated
-unit and **pool** the per-unit effects. Conservative by design (near-0%
-false-positive rate via conformal inference).
+unit and **pool** the per-unit effects, with size-controlled conformal
+inference.
 
 - `mode="mspe"` — **CP-ASC**: empirical-Bayes pooling, weighting unit `d` by
   `1 / (mspe_d + median(mspe))`. Poorly-fitting units are shrunk toward the pool.
@@ -108,10 +108,19 @@ false-positive rate via conformal inference).
 **Estimand.** Pooled ATT across treated units (equal-ish for `mspe`/`stratified`,
 baseline-weighted/cumulative for `cumulative`).
 
-**Inference.** **Conformal block permutation** on the pooled residual path: under
-the sharp null and residual stationarity, the actual post-treatment block is
-exchangeable with all circularly-shifted blocks; the p-value is the share at
-least as extreme. Tune resolution with `block_len`.
+**Inference.** **Conformal block permutation under a null-imposed refit**
+(Chernozhukov–Wüthrich–Zhu style). To test H₀ of no effect, each unit's SC
+weights are re-estimated on *all* T periods (under H₀ the post periods are just
+more untreated data) and the pooled full-sample residual path is permuted: the
+post-treatment block is compared against every circularly-shifted block, and
+the p-value is the share at least as extreme. Fitting everything symmetrically
+in time is what makes the blocks exchangeable under H₀ — permuting the main
+fit's residuals (in-sample pre vs out-of-sample post) over-rejects exactly when
+the fit is good. Two practical notes: the p-value has granularity `1/T` (a
+30-period panel cannot reach p < 0.033), and a valid permutation test trades
+some power for size — persistent effects are partially absorbed by the
+full-sample fit, so detection needs a clearly visible effect. Tune resolution
+with `block_len`.
 
 ---
 

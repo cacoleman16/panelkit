@@ -31,6 +31,7 @@ class CPASCResult:
     unit_mspe: list[float]
     unit_weight: list[float]
     pooled_residual: list[float]
+    null_residual: list[float]
     t0: int
     def __repr__(self) -> str: ...
 

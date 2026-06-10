@@ -252,6 +252,7 @@ pub fn fit_cpasc(
         unit_mspe: fit.units.iter().map(|u| u.mspe).collect(),
         unit_weight: fit.units.iter().map(|u| u.weight).collect(),
         pooled_residual: fit.pooled_residual,
+        null_residual: fit.null_residual,
         t0: fit.t0,
     })
 }

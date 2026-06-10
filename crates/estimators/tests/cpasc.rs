@@ -103,3 +103,52 @@ fn stratified_and_cumulative_modes_run_and_pool() {
         );
     }
 }
+
+#[test]
+fn conformal_pvalue_is_size_controlled_under_null() {
+    // 200 seeded replications of the package's own multi-treated DGP with
+    // tau = 0: P(p <= 0.10) must sit near/below the nominal 10% (the block
+    // permutation has granularity 1/T = 1/30 here, so uniform-null mass at or
+    // below 0.10 is exactly 3/30 = 0.10). The old pre/post-asymmetric residual
+    // construction rejected at ~2x nominal on this DGP — precisely because the
+    // per-unit fits are good here (in-hull treated units).
+    let n_rep = 200usize;
+    let mut reject = 0usize;
+    for rep in 0..n_rep {
+        let (panel, t0) = multi_treated_panel(4, 0.0, 1_000 + rep as u64);
+        let fit = fit_at(&panel, t0, CpascConfig::default());
+        if fit.p_value <= 0.10 {
+            reject += 1;
+        }
+    }
+    let rate = reject as f64 / n_rep as f64;
+    // 0.16 = nominal 0.10 + ~3 MC standard errors at n=200.
+    assert!(
+        rate <= 0.16,
+        "conformal test anti-conservative under the null: P(p<=0.1) = {rate}"
+    );
+}
+
+#[test]
+fn conformal_pvalue_keeps_power_under_real_effect() {
+    // A valid permutation test pays for size with power: the null-imposed
+    // refit absorbs part of a persistent effect into the weights, and circular
+    // blocks overlapping the post window compete with it, so power rises
+    // slowly in tau (measured on this DGP: ~0.57 at tau=2, ~0.92 at tau=6).
+    // This is regression protection that a clear effect stays detectable —
+    // the replications are seeded, so the rate is deterministic.
+    let n_rep = 100usize;
+    let mut detected = 0usize;
+    for rep in 0..n_rep {
+        let (panel, t0) = multi_treated_panel(4, 6.0, 9_000 + rep as u64);
+        let fit = fit_at(&panel, t0, CpascConfig::default());
+        if fit.p_value <= 0.10 {
+            detected += 1;
+        }
+    }
+    let rate = detected as f64 / n_rep as f64;
+    assert!(
+        rate >= 0.85,
+        "conformal test lost its power under tau=6: detection rate {rate}"
+    );
+}
