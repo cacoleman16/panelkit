@@ -361,3 +361,131 @@ fn frobenius_norm_matches_manual() {
     let a = Mat::from_row_major(2, 2, &[3.0, 4.0, 0.0, 0.0]);
     assert!((frobenius(&a) - 5.0).abs() < TOL);
 }
+
+// ---------------------------------------------------------------------------
+// Scale-robustness regressions: every case below used to return silently
+// wrong results (zeroed solutions, identity eigenvectors, wrong singular
+// values, oscillating PG iterates) at extreme-but-valid float scales.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qr_lstsq_is_scale_invariant_at_tiny_scales() {
+    // cond(A) == 1 regardless of units; the rank threshold must be relative.
+    // The old absolute 1e-12 floor returned x = 0 here.
+    for scale in [1e-13, 1e-30, 1.0, 1e30] {
+        let mut a = Mat::zeros(4, 4);
+        for i in 0..4 {
+            a.set(i, i, scale);
+        }
+        let b = vec![scale; 4];
+        let qr = Qr::new(&a).unwrap();
+        let x = qr.solve_lstsq(&b);
+        for xi in &x {
+            assert!(
+                (xi - 1.0).abs() < 1e-10,
+                "scale {scale:e}: expected 1.0, got {xi}"
+            );
+        }
+    }
+}
+
+#[test]
+fn eig_sym_converges_for_tiny_norm_matrices() {
+    // ‖A‖ ≈ 3e-16: the old `.max(1.0)` convergence floor accepted the input
+    // unrotated (eigenvectors = identity). True pairs: 3e-16 and 1e-16 with
+    // ±45° eigenvectors.
+    let a = Mat::from_row_major(2, 2, &[2e-16, 1e-16, 1e-16, 2e-16]);
+    let eig = SymEig::new(&a);
+    let v = eig.values();
+    assert!((v[0] - 3e-16).abs() < 1e-22, "λ1 = {}", v[0]);
+    assert!((v[1] - 1e-16).abs() < 1e-22, "λ2 = {}", v[1]);
+    let vec0 = eig.vectors().col(0);
+    assert!(
+        (vec0[0].abs() - core::f64::consts::FRAC_1_SQRT_2).abs() < 1e-8,
+        "eigenvector not rotated: {vec0:?}"
+    );
+}
+
+#[test]
+fn svd_is_scale_invariant_at_extreme_scales() {
+    // σ(c·A) = c·σ(A); the raw Gram accumulation used to overflow at 1e200
+    // (inf <= inf → "converged") and flush to zero at 1e-180.
+    let phi = (1.0 + 5.0_f64.sqrt()) / 2.0; // singular values of [[1,1],[0,1]]
+    for scale in [1e200, 1e-180, 1.0] {
+        let a = Mat::from_row_major(2, 2, &[scale, scale, 0.0, scale]);
+        let s = Svd::new(&a).singular_values().to_vec();
+        assert!(
+            (s[0] / scale - phi).abs() < 1e-12,
+            "scale {scale:e}: σ1/c = {} (want {phi})",
+            s[0] / scale
+        );
+        assert!(
+            (s[1] / scale - 1.0 / phi).abs() < 1e-12,
+            "scale {scale:e}: σ2/c = {} (want {})",
+            s[1] / scale,
+            1.0 / phi
+        );
+    }
+}
+
+#[test]
+fn householder_qr_survives_huge_columns() {
+    // The unscaled column norm overflowed for entries ≳ 1e154 → R = -inf and
+    // lstsq returned 0. hypot-based norms keep it exact.
+    let a = Mat::from_row_major(2, 1, &[1e200, 1e200]);
+    let qr = Qr::new(&a).unwrap();
+    let x = qr.solve_lstsq(&[1e200, 1e200]);
+    assert!((x[0] - 1.0).abs() < 1e-12, "got {x:?}");
+}
+
+#[test]
+fn solve_pg_handles_adversarial_gram() {
+    // G's top eigenvector [1,-1]/√2 is orthogonal to PG's deterministic
+    // power-iteration start (all-ones), so the old Lipschitz estimate was λ₂
+    // (a LOWER bound) and the iteration oscillated to w = [0,1] with
+    // objective 1.0. True optimum: w* = [31/60, 29/60], objective ≈ 0.19917.
+    let gram = Mat::from_row_major(2, 2, &[2.0, -1.0, -1.0, 2.0]);
+    let b = vec![0.1, 0.0];
+    let pg = solve_pg(&gram, &b, 0.0, 50_000, 1e-12);
+    let fw = solve_fw(&gram, &b, 0.0, 50_000, 1e-12);
+    for i in 0..2 {
+        assert!(
+            (pg.w[i] - fw.w[i]).abs() < 1e-6,
+            "PG {:?} != FW {:?}",
+            pg.w,
+            fw.w
+        );
+    }
+    assert!((pg.w[0] - 31.0 / 60.0).abs() < 1e-6, "w = {:?}", pg.w);
+}
+
+#[test]
+fn nan_input_does_not_panic_sorters() {
+    // NaN must propagate as NaN output, not kill the comparator.
+    let a = Mat::from_row_major(2, 2, &[1.0, f64::NAN, 0.0, 1.0]);
+    let svd = Svd::new(&a);
+    assert!(svd.singular_values().iter().any(|s| s.is_nan()));
+    let _ = SymEig::new(&a); // must not panic
+    let _ = project_simplex(&[f64::NAN, 0.5]); // must not panic
+}
+
+#[test]
+#[should_panic(expected = "empty range")]
+fn gen_range_zero_panics_in_release_too() {
+    Xoshiro256pp::seed_from_u64(0).gen_range(0);
+}
+
+#[test]
+#[should_panic(expected = "rhs length")]
+fn cholesky_solve_rejects_wrong_length_rhs() {
+    let a = Mat::from_row_major(2, 2, &[4.0, 1.0, 1.0, 3.0]);
+    let chol = Cholesky::new(&a).unwrap();
+    let _ = chol.solve_vec(&[1.0, 2.0, 77.0, -5.0]);
+}
+
+#[test]
+#[should_panic(expected = "square")]
+fn eig_sym_rejects_non_square_in_release_too() {
+    let a = Mat::from_row_major(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let _ = SymEig::new(&a);
+}

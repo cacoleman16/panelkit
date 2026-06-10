@@ -22,7 +22,9 @@ impl SymEig {
 
     pub fn new_tol(a: &Mat, tol: f64, max_sweeps: usize) -> SymEig {
         let n = a.rows();
-        debug_assert_eq!(n, a.cols(), "SymEig requires a square matrix");
+        // Hard assert (not debug): in release a non-square input would silently
+        // decompose the leading square block — a wrong answer, not a crash.
+        assert_eq!(n, a.cols(), "SymEig requires a square matrix");
         // Symmetrize defensively (read both triangles, average).
         let mut m = Mat::zeros(n, n);
         for j in 0..n {
@@ -43,6 +45,11 @@ impl SymEig {
             s.sqrt()
         };
 
+        // Strictly relative convergence scale. (A `.max(1.0)` floor here would
+        // turn the test absolute for small-normed matrices — a matrix with
+        // norm 1e-16 would pass the "converged" check after zero sweeps and
+        // return identity eigenvectors.) The zero matrix converges immediately
+        // since its off-diagonal norm is exactly 0 ≤ 0.
         let scale = {
             let mut s = 0.0;
             for j in 0..n {
@@ -50,7 +57,7 @@ impl SymEig {
                     s += m.get(i, j) * m.get(i, j);
                 }
             }
-            s.sqrt().max(1.0)
+            s.sqrt()
         };
 
         for _ in 0..max_sweeps {
@@ -96,7 +103,8 @@ impl SymEig {
 
         let mut values: Vec<f64> = (0..n).map(|i| m.get(i, i)).collect();
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&i, &j| values[j].partial_cmp(&values[i]).unwrap());
+        // total_cmp: NaN input must yield NaN output, not a comparator panic.
+        order.sort_by(|&i, &j| values[j].total_cmp(&values[i]));
 
         let mut vsorted = Mat::zeros(n, n);
         let mut sorted_vals = vec![0.0; n];

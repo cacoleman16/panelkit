@@ -28,7 +28,7 @@ pub fn project_simplex(v: &[f64]) -> Vec<f64> {
         return Vec::new();
     }
     let mut u = v.to_vec();
-    u.sort_by(|a, b| b.partial_cmp(a).unwrap()); // descending
+    u.sort_by(|a, b| b.total_cmp(a)); // descending; NaN-safe
     let mut css = 0.0;
     let mut theta = 0.0;
     for (j, &uj) in u.iter().enumerate() {
@@ -118,7 +118,7 @@ pub fn solve_fw(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> S
         // Descent ∝ −g·d. Pick whichever direction descends more.
         let fw_descent = -(gmin - gw); // = gw − gmin = gap  (>= 0)
         let away_descent = gmax - gw; // = −g·d_A
-        let (mut d, gamma_max) = if v == usize::MAX || fw_descent >= away_descent {
+        let (d, gamma_max) = if v == usize::MAX || fw_descent >= away_descent {
             // Frank–Wolfe step, step size in [0, 1].
             let mut d = w.iter().map(|&wi| -wi).collect::<Vec<_>>();
             d[s] += 1.0;
@@ -170,7 +170,6 @@ pub fn solve_fw(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> S
                 *wi *= inv;
             }
         }
-        let _ = &mut d;
     }
 
     SimplexSolution {
@@ -181,8 +180,8 @@ pub fn solve_fw(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> S
 }
 
 /// Projected-gradient solver for the simplex QP, with a fixed step `1/L` where
-/// `L` is an upper bound on the curvature (estimated by power iteration on
-/// `G + ηI`). Used where the FW vertex bias is undesirable.
+/// `L` is a guaranteed upper bound on the curvature of `G + ηI` (Gershgorin).
+/// Used where the FW vertex bias is undesirable.
 pub fn solve_pg(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> SimplexSolution {
     let j = b.len();
     if j == 0 {
@@ -192,8 +191,13 @@ pub fn solve_pg(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> S
             gap: 0.0,
         };
     }
-    // Estimate Lipschitz constant L ≈ λ_max(G+ηI) by power iteration.
-    let l = power_iter_max_eig(gram, eta).max(1e-12);
+    // Lipschitz bound L = max_i Σ_j |G_ij| + η ≥ λ_max(G + ηI) (Gershgorin).
+    // This must be an UPPER bound: power iteration converges from *below*, and
+    // from a deterministic start it can converge to a smaller eigenvalue
+    // entirely (e.g. when the top eigenvector is orthogonal to the all-ones
+    // start), making the step too long and the iteration oscillate around a
+    // wrong point.
+    let l = gershgorin_max_eig(gram, eta).max(1e-12);
     let step = 1.0 / l;
 
     let mut w = vec![1.0 / j as f64; j];
@@ -229,29 +233,20 @@ pub fn solve_pg(gram: &Mat, b: &[f64], eta: f64, max_iter: usize, tol: f64) -> S
     }
 }
 
-/// Largest eigenvalue of `G + ηI` via a few power iterations.
-fn power_iter_max_eig(gram: &Mat, eta: f64) -> f64 {
+/// Gershgorin upper bound on the largest eigenvalue of `G + ηI`:
+/// `max_i Σ_j |G_ij| + η`. For a symmetric PSD Gram this overshoots λ_max by at
+/// most a factor of ~n — a safe (if conservative) projected-gradient step.
+fn gershgorin_max_eig(gram: &Mat, eta: f64) -> f64 {
     let n = gram.rows();
-    if n == 0 {
-        return eta;
+    let mut l = 0.0_f64;
+    for i in 0..n {
+        let mut row = 0.0;
+        for j in 0..n {
+            row += gram.get(i, j).abs();
+        }
+        l = l.max(row);
     }
-    let mut v = vec![1.0 / (n as f64).sqrt(); n];
-    let mut lambda = 0.0;
-    for _ in 0..50 {
-        let mut gv = matvec(gram, &v);
-        for i in 0..n {
-            gv[i] += eta * v[i];
-        }
-        let nrm = crate::ops::norms::nrm2(&gv);
-        if nrm == 0.0 {
-            break;
-        }
-        for i in 0..n {
-            v[i] = gv[i] / nrm;
-        }
-        lambda = nrm;
-    }
-    lambda
+    l + eta
 }
 
 /// Convenience: synthetic-control weights minimizing `‖y − Y₀ w‖²` over the

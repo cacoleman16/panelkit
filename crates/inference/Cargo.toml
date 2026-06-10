@@ -10,7 +10,9 @@ description = "Resampling inference engines (placebo, jackknife, bootstrap, conf
 
 [features]
 default = []
-parallel = ["dep:rayon", "panelkit-linalg/parallel"]
+# (No `panelkit-linalg/parallel` here: the linalg core has no parallel code
+# paths — the feature it used to forward to was a no-op and has been removed.)
+parallel = ["dep:rayon"]
 
 [dependencies]
 panelkit-linalg = { workspace = true }
