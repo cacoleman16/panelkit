@@ -90,6 +90,29 @@ pub struct PyDidResult {
     /// Event-study standard errors matching `event_time`.
     #[pyo3(get)]
     pub event_se: Vec<f64>,
+    /// Simultaneous (sup-t) band bounds per event time, when the multiplier
+    /// bootstrap ran (`bands=True`); empty otherwise.
+    #[pyo3(get)]
+    pub event_lo: Vec<f64>,
+    #[pyo3(get)]
+    pub event_hi: Vec<f64>,
+    /// The sup-t band critical value (in SE units), when bands ran.
+    #[pyo3(get)]
+    pub band_crit: Option<f64>,
+    /// Per-cohort ("group") aggregation: cohorts, their ATT_g and SEs.
+    /// Callaway & Sant'Anna only; empty for TWFE / Sun-Abraham.
+    #[pyo3(get)]
+    pub group_cohort: Vec<i64>,
+    #[pyo3(get)]
+    pub group_att: Vec<f64>,
+    #[pyo3(get)]
+    pub group_se: Vec<f64>,
+    /// Cohort-size-weighted average of ATT_g (C&S's recommended headline
+    /// aggregation), when available.
+    #[pyo3(get)]
+    pub overall_group_att: Option<f64>,
+    #[pyo3(get)]
+    pub overall_group_se: Option<f64>,
 }
 
 #[pymethods]

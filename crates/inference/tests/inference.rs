@@ -164,3 +164,34 @@ fn placebo_atts_are_outcome_scale_nulls() {
         );
     }
 }
+
+#[test]
+fn multiplier_event_bands_are_uniform_and_deterministic() {
+    use panelkit_inference::multiplier_event_bands;
+    use panelkit_linalg::rng::Xoshiro256pp;
+
+    // Three synthetic event times with iid unit influences.
+    let n = 200usize;
+    let mut rng = Xoshiro256pp::seed_from_u64(7);
+    let ifs: Vec<Vec<f64>> = (0..3)
+        .map(|_| (0..n).map(|_| rng.next_normal()).collect())
+        .collect();
+    let ses: Vec<f64> = ifs
+        .iter()
+        .map(|f| (f.iter().map(|x| x * x).sum::<f64>() / (n as f64 * n as f64)).sqrt())
+        .collect();
+    let atts = vec![0.5, 1.0, -0.2];
+
+    let (bands, crit) = multiplier_event_bands(&ifs, &atts, &ses, 999, 0, 0.95);
+    // The sup-t critical value must be at least the pointwise z (1.96) — a
+    // simultaneous band can never be narrower than the marginal one.
+    assert!(crit >= 1.9, "sup-t crit {crit} below the pointwise z");
+    for (e, &(lo, hi)) in bands.iter().enumerate() {
+        assert!(lo < atts[e] && atts[e] < hi);
+        assert!((hi - lo) >= 2.0 * 1.9 * ses[e]);
+    }
+    // Deterministic given the seed.
+    let (bands2, crit2) = multiplier_event_bands(&ifs, &atts, &ses, 999, 0, 0.95);
+    assert_eq!(crit, crit2);
+    assert_eq!(bands, bands2);
+}
