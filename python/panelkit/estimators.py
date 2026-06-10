@@ -558,13 +558,99 @@ class _DiDResult:
     def event_se(self) -> np.ndarray:
         return np.asarray(self._raw.event_se, dtype=float)
 
+    @property
+    def event_bands(self):
+        """(lo, hi) simultaneous sup-t band arrays, when ``bands=True`` ran."""
+        lo = getattr(self._raw, "event_lo", [])
+        if lo is None or len(lo) == 0:
+            return None
+        return (np.asarray(self._raw.event_lo, dtype=float),
+                np.asarray(self._raw.event_hi, dtype=float))
+
+    @property
+    def band_crit(self):
+        """Sup-t critical value (in SE units) behind ``event_bands``."""
+        return getattr(self._raw, "band_crit", None)
+
+    @property
+    def group_cohort(self) -> np.ndarray:
+        """Cohorts of the per-group aggregation (C&S only; empty otherwise)."""
+        return np.asarray(getattr(self._raw, "group_cohort", []), dtype=int)
+
+    @property
+    def group_att(self) -> np.ndarray:
+        return np.asarray(getattr(self._raw, "group_att", []), dtype=float)
+
+    @property
+    def group_se(self) -> np.ndarray:
+        return np.asarray(getattr(self._raw, "group_se", []), dtype=float)
+
+    @property
+    def overall_group_att(self):
+        """Cohort-size-weighted average of the per-cohort ATTs (C&S's
+        recommended headline aggregation), when available."""
+        return getattr(self._raw, "overall_group_att", None)
+
+    @property
+    def overall_group_se(self):
+        return getattr(self._raw, "overall_group_se", None)
+
     def summary(self) -> str:
         lines = [f"overall ATT : {self.att:.6g}  (se {self.se:.4g})"]
+        if self.overall_group_att is not None:
+            lines.append(
+                f"group ATT   : {self.overall_group_att:.6g}  "
+                f"(se {self.overall_group_se:.4g})  [cohort-weighted]"
+            )
+        if len(self.group_cohort):
+            lines.append("per-cohort:")
+            for g, a, s in zip(self.group_cohort, self.group_att, self.group_se):
+                lines.append(f"  g={g:>3d}: {a:>9.4f}  (se {s:.4f})")
         if len(self.event_time):
-            lines.append("event study:")
-            for e, a, s in zip(self.event_time, self.event_att, self.event_se):
-                lines.append(f"  e={e:>3d}: {a:>9.4f}  (se {s:.4f})")
+            bands = self.event_bands
+            lines.append("event study:" + ("  [with simultaneous bands]" if bands else ""))
+            for i, (e, a, s) in enumerate(zip(self.event_time, self.event_att, self.event_se)):
+                extra = f"  band [{bands[0][i]:.4f}, {bands[1][i]:.4f}]" if bands else ""
+                lines.append(f"  e={e:>3d}: {a:>9.4f}  (se {s:.4f}){extra}")
         return "\n".join(lines)
+
+    def plot(self, path: str | None = None, title: str | None = None):
+        """Event-study plot: coefficients with pointwise 95% whiskers, the
+        simultaneous band (when ``bands=True`` ran) as a shaded region, a zero
+        line, and the treatment onset marked at e = -0.5. Returns the
+        matplotlib figure; saves to ``path`` when given."""
+        try:
+            import matplotlib
+            if path is not None:
+                matplotlib.use("Agg", force=False)
+            import matplotlib.pyplot as plt
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "plotting needs matplotlib (`pip install matplotlib`)"
+            ) from exc
+        e = self.event_time
+        if not len(e):
+            raise ValueError("no event-study path to plot (TWFE has none)")
+        a = self.event_att
+        s = self.event_se
+        fig, ax = plt.subplots(figsize=(8.0, 4.5))
+        bands = self.event_bands
+        if bands is not None:
+            ax.fill_between(e, bands[0], bands[1], alpha=0.18, color="#1f77b4",
+                            label=f"simultaneous band (crit {self.band_crit:.2f})")
+        ax.errorbar(e, a, yerr=1.96 * s, fmt="o", ms=4.5, capsize=3,
+                    color="#1f77b4", label="event-study ATT (±1.96·se)")
+        ax.axhline(0.0, color="0.4", lw=1.0)
+        ax.axvline(-0.5, color="0.6", lw=1.0, ls="--")
+        ax.set_xlabel("event time  e = t − g")
+        ax.set_ylabel("ATT")
+        ax.set_title(title or "Event study")
+        ax.legend(frameon=False, fontsize=9)
+        fig.tight_layout()
+        if path is not None:
+            fig.savefig(path, dpi=150)
+            plt.close(fig)
+        return fig
 
     def __repr__(self) -> str:
         return repr(self._raw)
@@ -614,14 +700,45 @@ class CallawaySantAnna:
     control_group:
         ``"never"`` (never-treated, default) or ``"notyet"`` (not-yet-treated —
         a larger control pool that also works without never-treated units).
+    anticipation:
+        Allow this many periods of treatment anticipation: the base period
+        moves to ``g - 1 - anticipation``, and event-study entries at
+        ``e ∈ [-anticipation, 0)`` measure the anticipation response.
+    inference:
+        ``"analytic"`` (influence-function SEs, default) or ``"bootstrap"``
+        (adds multiplier-bootstrap **simultaneous sup-t bands** to the event
+        study — the C&S-recommended joint inference; see ``.event_bands``).
+    level, n_reps, seed:
+        Simultaneous-band settings when ``inference="bootstrap"``.
     """
 
-    def __init__(self, control_group: str = "never"):
+    def __init__(
+        self,
+        control_group: str = "never",
+        anticipation: int = 0,
+        inference: str = "analytic",
+        level: float = 0.95,
+        n_reps: int = 999,
+        seed: int = 0,
+    ):
         if control_group not in ("never", "notyet", "not_yet_treated"):
             raise ValueError(
                 f"control_group must be 'never' or 'notyet'; got {control_group!r}"
             )
+        if inference not in ("analytic", "bootstrap"):
+            raise ValueError(
+                f"CallawaySantAnna inference must be 'analytic' or 'bootstrap'; "
+                f"got {inference!r}"
+            )
+        anticipation = int(anticipation)
+        if anticipation < 0:
+            raise ValueError(f"anticipation must be >= 0; got {anticipation}")
         self.control_group = control_group
+        self.anticipation = anticipation
+        self.inference = inference
+        self.level = _check_level(level)
+        self.n_reps = n_reps
+        self.seed = seed
 
     def fit(self, y, treat_start: Sequence, covariates=None) -> _DiDResult:
         """Fit C&S. Pass ``covariates`` (an ``N×K`` array of time-invariant unit
@@ -638,7 +755,9 @@ class CallawaySantAnna:
                 )
         return _DiDResult(
             _panelkit.fit_callaway_py(
-                mat, _cohorts(treat_start, mat.shape[0]), self.control_group, cov
+                mat, _cohorts(treat_start, mat.shape[0]), self.control_group, cov,
+                self.anticipation, self.inference == "bootstrap",
+                int(self.n_reps), int(self.seed), self.level,
             )
         )
 

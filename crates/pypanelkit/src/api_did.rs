@@ -6,9 +6,10 @@
 
 use numpy::PyReadonlyArray2;
 use panelkit_estimators::did::{
-    bacon_decompose, fit_callaway_with, fit_sunab, fit_twfe, BaconKind, ControlGroup,
+    bacon_decompose, fit_callaway_with_anticipation, fit_sunab, fit_twfe, BaconKind, ControlGroup,
 };
 use panelkit_estimators::Panel;
+use panelkit_inference::multiplier_event_bands;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -89,6 +90,14 @@ pub fn fit_twfe_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyDi
         event_time: Vec::new(),
         event_att: Vec::new(),
         event_se: Vec::new(),
+        event_lo: Vec::new(),
+        event_hi: Vec::new(),
+        band_crit: None,
+        group_cohort: Vec::new(),
+        group_att: Vec::new(),
+        group_se: Vec::new(),
+        overall_group_att: None,
+        overall_group_se: None,
     })
 }
 
@@ -97,12 +106,19 @@ pub fn fit_twfe_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyDi
 /// `covariates` (an `N×K` array) is given, uses covariate-adjusted (regression-
 /// adjustment) ATTs.
 #[pyfunction]
-#[pyo3(signature = (y, cohorts, control="never", covariates=None))]
+#[pyo3(signature = (y, cohorts, control="never", covariates=None, anticipation=0, bands=false, n_reps=999, seed=0, level=0.95))]
+#[allow(clippy::too_many_arguments)]
 pub fn fit_callaway_py(
+    py: Python<'_>,
     y: PyReadonlyArray2<f64>,
     cohorts: Vec<i64>,
     control: &str,
     covariates: Option<PyReadonlyArray2<f64>>,
+    anticipation: usize,
+    bands: bool,
+    n_reps: usize,
+    seed: u64,
+    level: f64,
 ) -> PyResult<PyDidResult> {
     let cg = match control {
         "never" => ControlGroup::NeverTreated,
@@ -115,6 +131,14 @@ pub fn fit_callaway_py(
     };
     let mut panel = build_panel(y, cohorts)?;
     require_estimable_cohort(&panel, "Callaway-Sant'Anna")?;
+    validate::check_unit_interval("level", level)?;
+    validate::check_min_count("n_reps", n_reps, 1)?;
+    if !panel.cohorts().into_iter().any(|g| g > anticipation) {
+        return Err(PyValueError::new_err(format!(
+            "anticipation={anticipation}: no cohort has a usable base period              (need treat_start >= {})",
+            1 + anticipation
+        )));
+    }
     if cg == ControlGroup::NeverTreated {
         require_never_treated(
             &panel,
@@ -139,14 +163,38 @@ pub fn fit_callaway_py(
         }
         panel = panel.with_covariates(mat_from_numpy(&cov));
     }
-    let cs = fit_callaway_with(&panel, cg);
-    Ok(PyDidResult {
-        att: cs.overall_att,
-        se: cs.overall_se,
-        event_time: cs.event_study.iter().map(|e| e.key).collect(),
-        event_att: cs.event_study.iter().map(|e| e.att).collect(),
-        event_se: cs.event_study.iter().map(|e| e.se).collect(),
-    })
+    let result = py.allow_threads(move || {
+        let cs = fit_callaway_with_anticipation(&panel, cg, anticipation);
+        let (event_lo, event_hi, band_crit) = if bands && !cs.event_study.is_empty() {
+            let ifs: Vec<Vec<f64>> = cs.event_study.iter().map(|e| e.influence.clone()).collect();
+            let atts: Vec<f64> = cs.event_study.iter().map(|e| e.att).collect();
+            let ses: Vec<f64> = cs.event_study.iter().map(|e| e.se).collect();
+            let (b, crit) = multiplier_event_bands(&ifs, &atts, &ses, n_reps, seed, level);
+            (
+                b.iter().map(|&(lo, _)| lo).collect(),
+                b.iter().map(|&(_, hi)| hi).collect(),
+                Some(crit),
+            )
+        } else {
+            (Vec::new(), Vec::new(), None)
+        };
+        PyDidResult {
+            att: cs.overall_att,
+            se: cs.overall_se,
+            event_time: cs.event_study.iter().map(|e| e.key).collect(),
+            event_att: cs.event_study.iter().map(|e| e.att).collect(),
+            event_se: cs.event_study.iter().map(|e| e.se).collect(),
+            event_lo,
+            event_hi,
+            band_crit,
+            group_cohort: cs.group_study.iter().map(|e| e.key).collect(),
+            group_att: cs.group_study.iter().map(|e| e.att).collect(),
+            group_se: cs.group_study.iter().map(|e| e.se).collect(),
+            overall_group_att: Some(cs.overall_group_att),
+            overall_group_se: Some(cs.overall_group_se),
+        }
+    });
+    Ok(result)
 }
 
 /// Sun & Abraham interaction-weighted event study.
@@ -166,6 +214,14 @@ pub fn fit_sunab_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyD
         event_time: sa.event_study.iter().map(|e| e.key).collect(),
         event_att: sa.event_study.iter().map(|e| e.att).collect(),
         event_se: sa.event_study.iter().map(|e| e.se).collect(),
+        event_lo: Vec::new(),
+        event_hi: Vec::new(),
+        band_crit: None,
+        group_cohort: Vec::new(),
+        group_att: Vec::new(),
+        group_se: Vec::new(),
+        overall_group_att: None,
+        overall_group_se: None,
     })
 }
 

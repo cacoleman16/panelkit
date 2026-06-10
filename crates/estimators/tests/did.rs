@@ -5,7 +5,8 @@
 #![allow(clippy::needless_range_loop)]
 
 use panelkit_estimators::did::{
-    bacon_decompose, fit_callaway, fit_callaway_with, fit_sunab, fit_twfe, BaconKind, ControlGroup,
+    bacon_decompose, fit_callaway, fit_callaway_with, fit_callaway_with_anticipation, fit_sunab,
+    fit_twfe, BaconKind, ControlGroup,
 };
 use panelkit_estimators::Panel;
 use panelkit_linalg::rng::Xoshiro256pp;
@@ -453,4 +454,128 @@ fn cs_covariate_ci_covers_with_estimated_beta() {
         coverage >= 0.90,
         "covariate-adjusted CI under-covers: {coverage} (want ~0.95)"
     );
+}
+
+#[test]
+fn cs_group_aggregation_weights_cohorts_by_size() {
+    // Noiseless heterogeneous panel with unequal cohort sizes and unequal
+    // post-window lengths. The "simple" overall weights each post (g,t) CELL
+    // by cohort size (longer-exposed cohorts count more); the "group" overall
+    // weights each COHORT by size — C&S's recommended headline.
+    let (n, t) = (30usize, 12usize);
+    let (g1, g2) = (3usize, 9usize);
+    let (tau1, tau2) = (1.0, 4.0);
+    let (n1, n2) = (5usize, 15usize); // 10 never-treated
+    let mut y = Mat::zeros(n, t);
+    let mut starts = vec![None; n];
+    for i in 0..n {
+        let (g, tau) = if i < n1 {
+            (Some(g1), tau1)
+        } else if i < n1 + n2 {
+            (Some(g2), tau2)
+        } else {
+            (None, 0.0)
+        };
+        starts[i] = g;
+        for p in 0..t {
+            let mut v = (i as f64) * 0.1; // unit level only
+            if let Some(gg) = g {
+                if p >= gg {
+                    v += tau;
+                }
+            }
+            y.set(i, p, v);
+        }
+    }
+    let cs = fit_callaway(&Panel::new(y, starts));
+
+    // Per-cohort ATTs are exact.
+    assert_eq!(cs.group_study.len(), 2);
+    for agg in &cs.group_study {
+        let want = if agg.key == g1 as i64 { tau1 } else { tau2 };
+        assert!(
+            (agg.att - want).abs() < 1e-10,
+            "ATT_g for g={} is {}, want {}",
+            agg.key,
+            agg.att,
+            want
+        );
+    }
+    // Group overall: (n1·tau1 + n2·tau2) / (n1 + n2).
+    let want_group = (n1 as f64 * tau1 + n2 as f64 * tau2) / (n1 + n2) as f64;
+    assert!(
+        (cs.overall_group_att - want_group).abs() < 1e-10,
+        "group overall {} want {}",
+        cs.overall_group_att,
+        want_group
+    );
+    // Simple overall: cell-weighted — different whenever exposure lengths differ.
+    let cells1 = (t - g1) as f64 * n1 as f64;
+    let cells2 = (t - g2) as f64 * n2 as f64;
+    let want_simple = (cells1 * tau1 + cells2 * tau2) / (cells1 + cells2);
+    assert!(
+        (cs.overall_att - want_simple).abs() < 1e-10,
+        "simple overall {} want {}",
+        cs.overall_att,
+        want_simple
+    );
+    assert!(
+        (want_group - want_simple).abs() > 0.1,
+        "DGP should separate them"
+    );
+}
+
+#[test]
+fn cs_anticipation_shifts_the_base_period() {
+    // Effect turns on ONE period before formal adoption (anticipation = 1).
+    // With anticipation=0 the base period g-1 is contaminated and the
+    // event-study dynamics are biased; with anticipation=1 the base moves to
+    // g-2 and everything is exact: e = -1 shows the anticipation response,
+    // e >= 0 the full effect, e < -1 nothing.
+    let (n, t, g) = (12usize, 12usize, 6usize);
+    let tau = 2.0;
+    let mut y = Mat::zeros(n, t);
+    let mut starts = vec![None; n];
+    for i in 0..n {
+        let treated = i < 4;
+        if treated {
+            starts[i] = Some(g);
+        }
+        for p in 0..t {
+            let mut v = (i as f64) * 0.3;
+            if treated && p + 1 >= g {
+                v += tau; // anticipation: effect starts at g-1
+            }
+            y.set(i, p, v);
+        }
+    }
+    let panel = Panel::new(y, starts);
+
+    let cs0 = fit_callaway(&panel);
+    let e_minus2_biased = cs0
+        .event_study
+        .iter()
+        .find(|e| e.key == -2)
+        .map(|e| e.att)
+        .unwrap_or(0.0);
+    // Contaminated base (g-1 carries the effect): placebo at e=-2 looks like -tau.
+    assert!(
+        (e_minus2_biased + tau).abs() < 1e-10,
+        "expected contaminated pre-coefficient ~{}, got {}",
+        -tau,
+        e_minus2_biased
+    );
+
+    let cs1 = fit_callaway_with_anticipation(&panel, ControlGroup::NeverTreated, 1);
+    for e in &cs1.event_study {
+        let want = if e.key >= -1 { tau } else { 0.0 };
+        assert!(
+            (e.att - want).abs() < 1e-10,
+            "anticipation=1: e={} att {} want {}",
+            e.key,
+            e.att,
+            want
+        );
+    }
+    assert!((cs1.overall_att - tau).abs() < 1e-10);
 }

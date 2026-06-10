@@ -197,6 +197,7 @@ pub fn fit(panel: &Panel) -> SaResult {
             key: e,
             att,
             se: quad(&a).max(0.0).sqrt(),
+            influence: Vec::new(),
         });
     }
 

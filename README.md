@@ -153,11 +153,17 @@ from panelkit import TWFE, CallawaySantAnna, SunAbraham, GoodmanBacon
 
 # treat_start[i] = first treated period for unit i, or -1 if never treated.
 cs = CallawaySantAnna().fit(Y, treat_start)
-cs.att                  # overall ATT (cohort-size weighted)
+cs.att                  # overall ATT (cell-weighted "simple" aggregation)
+cs.overall_group_att    # cohort-weighted "group" ATT (C&S's headline)
 cs.event_time           # relative event times, e.g. [-5,...,-1, 0, 1,...]
 cs.event_att            # event-study coefficients (clean pre-trends + dynamics)
 cs.event_se             # influence-function standard errors
 print(cs.summary())
+
+# the C&S-recommended joint inference + a publication-style figure:
+cs = CallawaySantAnna(inference="bootstrap", anticipation=0).fit(Y, treat_start)
+cs.event_bands          # simultaneous sup-t bands (multiplier bootstrap)
+cs.plot("event_study.png")
 
 sa = SunAbraham().fit(Y, treat_start)           # interaction-weighted event study
 twfe = TWFE().fit(Y, treat_start)               # baseline; biased under heterogeneity
@@ -299,7 +305,7 @@ See [`examples/geo_demo.py`](examples/geo_demo.py).
 |---|---|---|
 | placebo / permutation (in-space) | SC family, small N treated | order-independent |
 | jackknife (leave-one-out) | SDID, N treated ≥ 2 | order-independent |
-| multiplier (wild) bootstrap | C&S / SA influence functions | seeded substreams |
+| multiplier (wild) bootstrap (sup-t bands) | C&S influence functions | seeded substreams |
 | conformal block permutation | CP-ASC, single-unit counterfactuals | order-independent |
 
 All bootstrap/permutation engines produce **bit-identical** results regardless

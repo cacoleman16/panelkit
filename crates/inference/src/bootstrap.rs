@@ -146,3 +146,57 @@ pub fn stationary_bootstrap_mean(
     });
     (percentile_ci(point, &draws, level), draws)
 }
+
+/// Multiplier bootstrap for an event-study path: **simultaneous (sup-t)
+/// confidence bands** from the per-event influence functions (Callaway &
+/// Sant'Anna §4.2). One multiplier draw `V_i` per unit per replicate is shared
+/// across all event times (preserving their joint distribution); the band
+/// critical value is the `level` quantile of `max_e |θ*_e| / σ̂_e`.
+///
+/// `ifs[e]` is event `e`'s unit-level influence function (length N, total-N
+/// scaling), `atts[e]`/`ses[e]` its point estimate and analytic SE. Events
+/// with a zero/empty IF are skipped in the max (their band is degenerate).
+/// Returns `(bands, crit)` with `bands[e] = (lo, hi) = atts[e] ∓/± crit·ses[e]`.
+///
+/// Determinism: replicate `b` uses substream `(seed, b)`.
+pub fn multiplier_event_bands(
+    ifs: &[Vec<f64>],
+    atts: &[f64],
+    ses: &[f64],
+    n_reps: usize,
+    seed: u64,
+    level: f64,
+) -> (Vec<(f64, f64)>, f64) {
+    assert_eq!(ifs.len(), atts.len());
+    assert_eq!(ifs.len(), ses.len());
+    let n = ifs.iter().map(|v| v.len()).max().unwrap_or(0);
+    if n == 0 || ifs.is_empty() {
+        return (atts.iter().map(|&a| (a, a)).collect(), 0.0);
+    }
+    let sup_t: Vec<f64> = crate::parallel::par_map(n_reps, seed, |_, rng| {
+        // One Mammen draw per unit, shared across event times.
+        let v: Vec<f64> = (0..n).map(|_| mammen(rng)).collect();
+        let mut m = 0.0_f64;
+        for (e, fe) in ifs.iter().enumerate() {
+            if fe.is_empty() || ses[e] <= 0.0 {
+                continue;
+            }
+            let mut acc = 0.0;
+            for (i, &ifi) in fe.iter().enumerate() {
+                acc += v[i] * ifi;
+            }
+            let theta = acc / fe.len() as f64;
+            m = m.max((theta / ses[e]).abs());
+        }
+        m
+    });
+    let mut sorted = sup_t;
+    sorted.sort_by(f64::total_cmp);
+    let crit = crate::ci::quantile_sorted(&sorted, level);
+    let bands = atts
+        .iter()
+        .zip(ses.iter())
+        .map(|(&a, &s)| (a - crit * s, a + crit * s))
+        .collect();
+    (bands, crit)
+}
