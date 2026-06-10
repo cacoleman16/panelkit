@@ -251,7 +251,45 @@ class GeoDesign:
         self.names = list(names) if names is not None else list(range(self.n))
         if len(self.names) != self.n:
             raise ValueError(f"names length {len(self.names)} != n markets {self.n}")
+        if len(set(self.names)) != self.n:
+            dupes = sorted({nm for nm in self.names if self.names.count(nm) > 1})
+            raise ValueError(
+                f"market names must be unique; duplicated: {dupes[:5]}"
+            )
         self._index = {nm: i for i, nm in enumerate(self.names)}
+
+    def _check_window(self, test_len: int, *, need_pre_window: bool = True) -> int:
+        """Validate a test window against the panel length, mirroring the engine
+        requirement (``max(test_len, 2)`` pre-periods must remain for placebo
+        windows; diagnostics only needs ≥1 pre-period)."""
+        tl = int(test_len)
+        if not (1 <= tl < self.t):
+            raise ValueError(
+                f"test_len must be in [1, {self.t}) (panel has {self.t} periods); got {tl}"
+            )
+        if need_pre_window and max(tl, 2) > self.t - tl:
+            max_len = max(
+                (l for l in range(1, self.t) if max(l, 2) <= self.t - l), default=0
+            )
+            raise ValueError(
+                f"test_len={tl} needs at least max(test_len, 2)={max(tl, 2)} pre-periods "
+                f"for historical placebo windows, but only {self.t - tl} of {self.t} "
+                f"periods would remain. Max usable test_len here: {max_len}."
+            )
+        return tl
+
+    def _check_donors_remain(self, idx: list[int]) -> None:
+        if len(idx) >= self.n:
+            raise ValueError(
+                "every market is treated; at least one market must remain as a control"
+            )
+
+    @staticmethod
+    def _check_prob(name: str, v: float) -> float:
+        v = float(v)
+        if not (0.0 < v < 1.0):
+            raise ValueError(f"{name} must be in (0, 1); got {v}")
+        return v
 
     @classmethod
     def from_long(cls, df, location: str, time: str, outcome: str, *, agg: str = "sum"):
@@ -360,7 +398,13 @@ class GeoDesign:
     def _resolve(self, markets) -> list[int]:
         out = []
         for m in markets:
-            if isinstance(m, (int, np.integer)) and not isinstance(m, bool):
+            if isinstance(m, (bool, np.bool_)):
+                # bool hashes equal to 0/1, so a name lookup would silently hit
+                # the market *named* 0 or 1 — reject outright.
+                raise ValueError(
+                    f"market spec {m!r} is a bool; pass market names or integer indices"
+                )
+            if isinstance(m, (int, np.integer)):
                 idx = int(m)
                 if not (0 <= idx < self.n):
                     raise ValueError(f"market index {idx} out of range [0, {self.n})")
@@ -395,7 +439,7 @@ class GeoDesign:
         methods: Sequence[str] = _METHODS,
         alpha: float = 0.10,
         target_power: float = 0.80,
-        recommended: str = "SDID",
+        recommended: str | None = None,
         lookback: int | None = None,
         ensemble: bool = True,
         ensemble_weights="auto",
@@ -427,8 +471,23 @@ class GeoDesign:
                              lookback=lookback, ensemble=ensemble,
                              ensemble_weights=ensemble_weights)
         idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
+        self._check_donors_remain(idx)
+        test_len = self._check_window(test_len)
+        alpha = self._check_prob("alpha", alpha)
+        target_power = self._check_prob("target_power", target_power)
+        methods = [str(m).upper() for m in methods]
+        unknown = [m for m in methods if m not in _METHODS]
+        if unknown:
+            raise ValueError(f"unknown methods {unknown}; choose from {list(_METHODS)}")
+        if not methods and not ensemble:
+            raise ValueError("methods is empty and ensemble=False — nothing to fit")
         names = [self.names[i] for i in idx]
         lifts = list(_DEFAULT_LIFTS if lifts is None else lifts)
+        bad = [x for x in lifts if not np.isfinite(x) or x < 0]
+        if bad:
+            raise ValueError(
+                f"lifts must be finite and >= 0 (detection is two-sided on |ATT|); got {bad}"
+            )
         if 0.0 not in lifts:
             lifts = [0.0] + list(lifts)
         lifts = sorted(set(float(x) for x in lifts))
@@ -436,15 +495,27 @@ class GeoDesign:
         results = {}
         for m in methods:
             results[m] = _panelkit.geo_power(
-                self.Y, idx, int(test_len), lifts, m.lower(), alpha, target_power, 0, lb
+                self.Y, idx, test_len, lifts, m.lower(), alpha, target_power, 0, lb
             )
         if ensemble:
             w = _ensemble_weight_arg(ensemble_weights)
             results["ENSEMBLE"] = _panelkit.geo_power_ensemble(
-                self.Y, idx, int(test_len), lifts, alpha, target_power, 0, lb, w
+                self.Y, idx, test_len, lifts, alpha, target_power, 0, lb, w
             )
-        diag = _panelkit.geo_diagnostics(self.Y, idx, int(test_len))
-        rec = recommended if recommended in results else list(results)[0]
+        if recommended is None:
+            # Auto: prefer SDID (the robust default), else the ensemble, else
+            # whatever was fitted first.
+            rec = ("SDID" if "SDID" in results
+                   else "ENSEMBLE" if "ENSEMBLE" in results
+                   else next(iter(results)))
+        else:
+            rec = str(recommended).upper()
+            if rec not in results:
+                raise ValueError(
+                    f"recommended={recommended!r} is not among the fitted results "
+                    f"{sorted(results)}; pass one of those (or add it to `methods`)"
+                )
+        diag = _panelkit.geo_diagnostics(self.Y, idx, test_len)
         return _PowerReport(self, idx, names, test_len, results, diag, rec, alpha, target_power)
 
     def diagnose(self, treated, test_len: int, exclude=None) -> "_DiagnosticsReport":
@@ -463,9 +534,11 @@ class GeoDesign:
                 raise ValueError(f"treated markets were also excluded: {bad}")
             return sub.diagnose(tnames, test_len)
         idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
+        self._check_donors_remain(idx)
+        test_len = self._check_window(test_len, need_pre_window=False)
         names = [self.names[i] for i in idx]
-        t0 = self.t - int(test_len)
-        diag = _panelkit.geo_diagnostics(self.Y, idx, int(test_len))
+        t0 = self.t - test_len
+        diag = _panelkit.geo_diagnostics(self.Y, idx, test_len)
         # Treated-average series and the SC counterfactual (from the SC weights).
         treated_series = self.Y[idx].mean(axis=0)
         scres = _panelkit.fit_sc(self.Y, idx, int(t0), 0.0, False, 0.95)
@@ -517,13 +590,22 @@ class GeoDesign:
                 seed=seed, top=top, exact_size=exact_size, lookback=lookback,
                 include=inc_names, exclude=None)
 
-        elig = self._resolve(eligible) if eligible is not None else list(range(self.n))
+        test_len = self._check_window(test_len)
+        alpha = self._check_prob("alpha", alpha)
+        target_power = self._check_prob("target_power", target_power)
+        if not (np.isfinite(target_lift) and float(target_lift) > 0):
+            raise ValueError(f"target_lift must be > 0 (e.g. 0.05 = 5%); got {target_lift}")
+        elig = sorted(set(self._resolve(eligible))) if eligible is not None \
+            else list(range(self.n))
         inc = sorted(set(self._resolve(include))) if include else []
         if len(inc) > int(max_treated):
             raise ValueError(f"include has {len(inc)} markets but max_treated="
                              f"{max_treated}; raise max_treated or include fewer")
+        if exact_size is not None and len(inc) > int(exact_size):
+            raise ValueError(f"include has {len(inc)} markets but exact_size="
+                             f"{exact_size}; raise exact_size or include fewer")
         ranked = _panelkit.geo_select(
-            self.Y, elig, int(max_treated), int(test_len), float(target_lift),
+            self.Y, elig, int(max_treated), test_len, float(target_lift),
             method.lower(), alpha, target_power, 0, int(n_candidates), int(seed),
             None if exact_size is None else int(exact_size),
             None if lookback is None else int(lookback),
@@ -605,7 +687,7 @@ class GeoDesign:
         methods: Sequence[str] = _METHODS,
         alpha: float = 0.10,
         target_power: float = 0.80,
-        recommended: str = "SDID",
+        recommended: str | None = None,
         lookback: int | None = None,
     ) -> "_MultiCellReport":
         """Power a **simultaneous multi-cell** geo test.
@@ -764,15 +846,19 @@ class GeoDesign:
                                 level=level, inference=inference, max_placebo=max_placebo,
                                 n_boot=n_boot, block_len=block_len, seed=seed)
         idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
+        self._check_donors_remain(idx)
         names = [self.names[i] for i in idx]
         t0 = int(treat_start)
         if not (1 <= t0 < self.t):
             raise ValueError(f"treat_start must be in [1, {self.t}); got {t0}")
+        level = self._check_prob("level", level)
         n_treated = len(idx)
-        methods = [m.upper() for m in methods]
+        methods = [str(m).upper() for m in methods]
+        if not methods:
+            raise ValueError("methods is empty — nothing to fit")
         unknown = [m for m in methods if m not in _METHODS]
         if unknown:
-            raise ValueError(f"unknown methods {unknown}; choose from {_METHODS}")
+            raise ValueError(f"unknown methods {unknown}; choose from {list(_METHODS)}")
 
         def _fit(method, tr, Y=None):
             Y = self.Y if Y is None else Y

@@ -58,7 +58,10 @@ Two ways to declare treatment:
   SyntheticControl().fit(Y, treated=[0], treat_time=3)
   ```
 - **Staggered adoption** (DiD family) — a per-unit `treat_start` array giving
-  each unit's first-treated period; `-1` (or `None`) means never-treated:
+  each unit's first-treated period; `-1` (or `None`) means never-treated. A
+  start at/after the last column means the unit never becomes treated *within
+  the sample*, so it is used as a never-treated control (the R `did` package
+  convention):
   ```python
   # unit 0 treated at t=3, unit 2 at t=4, unit 1 never treated
   CallawaySantAnna().fit(Y, treat_start=[3, -1, 4])

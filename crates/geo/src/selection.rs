@@ -109,20 +109,31 @@ fn candidate_sets(cfg: &SelectConfig) -> Vec<Vec<usize>> {
     let mut sets: Vec<Vec<usize>> = Vec::new();
 
     // Forced (must-treat) markets, de-duplicated, and the pool of extra picks.
+    // `eligible` is de-duplicated too: a repeated market must not produce
+    // candidates that treat the same unit "twice" (which would double-count its
+    // volume in the diagnostics).
     let mut forced: Vec<usize> = cfg.include.clone();
     forced.sort_unstable();
     forced.dedup();
     let forced_set: std::collections::HashSet<usize> = forced.iter().copied().collect();
-    let extra_pool: Vec<usize> = cfg
+    let mut extra_pool: Vec<usize> = cfg
         .eligible
         .iter()
         .copied()
         .filter(|u| !forced_set.contains(u))
         .collect();
+    extra_pool.sort_unstable();
+    extra_pool.dedup();
 
     if let Some(k0) = cfg.exact_size {
         let k = k0.max(1);
-        let need = k.saturating_sub(forced.len());
+        if forced.len() > k {
+            // Over-constrained: more must-treat markets than the requested set
+            // size. No candidate can satisfy both — surface "no candidates"
+            // rather than silently returning an oversized set.
+            return sets;
+        }
+        let need = k - forced.len();
         if need == 0 {
             // The forced set already fills the requested size.
             if !forced.is_empty() {
@@ -197,6 +208,7 @@ pub fn select_markets(y: &Mat, cfg: &SelectConfig) -> Vec<MarketCandidate> {
     let candidates = candidate_sets(cfg);
     let mut scored: Vec<MarketCandidate> =
         par_map_items(candidates, |treated| evaluate(y, &treated, cfg));
-    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    // total_cmp: a NaN score (degenerate panel) must rank last, not panic.
+    scored.sort_by(|a, b| b.score.total_cmp(&a.score));
     scored
 }

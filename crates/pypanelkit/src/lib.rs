@@ -12,6 +12,7 @@ mod api_geo;
 mod api_sc;
 mod convert;
 mod results;
+mod validate;
 
 /// The panelkit version string.
 #[pyfunction]

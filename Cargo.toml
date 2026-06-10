@@ -35,11 +35,16 @@ numpy = "0.25"
 # Dev-only.
 criterion = { version = "0.5", default-features = false }
 
+# NOTE: no `panic = "abort"` here. The release profile also builds the Python
+# extension module, and pyo3 can only translate a Rust panic into a catchable
+# `pyo3_runtime.PanicException` when the panic unwinds — with `abort` any
+# reachable panic kills the host interpreter (a Jupyter user loses their
+# kernel). Validation at the Python boundary should make panics unreachable;
+# unwinding is the safety net that keeps a missed one survivable.
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
 
 [profile.bench]
 opt-level = 3
