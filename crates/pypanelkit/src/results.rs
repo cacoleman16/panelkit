@@ -33,17 +33,24 @@ pub struct PyScResult {
     /// Placebo p-value, if inference was requested.
     #[pyo3(get)]
     pub p_value: Option<f64>,
-    /// Standard error from the resampling distribution, if available.
+    /// ATT-scale standard error (outcome units), if inference was requested.
+    /// For placebo inference this is the spread of the placebo ATTs, not of
+    /// the dimensionless RMSPE ratios.
     #[pyo3(get)]
     pub se: Option<f64>,
-    /// Lower/upper confidence bounds, if inference was requested.
+    /// ATT-scale confidence bounds, if inference was requested.
     #[pyo3(get)]
     pub ci_lower: Option<f64>,
     #[pyo3(get)]
     pub ci_upper: Option<f64>,
-    /// Raw inference distribution (e.g. placebo RMSPE ratios), if available.
+    /// The test-statistic null distribution (placebo RMSPE ratios — the
+    /// dimensionless statistics behind `p_value`), if available.
     #[pyo3(get)]
     pub inference_distribution: Option<Vec<f64>>,
+    /// Placebo ATTs in outcome units (one per donor refit as pseudo-treated)
+    /// — the ATT-scale null behind `se`/`ci_*`, if placebo inference ran.
+    #[pyo3(get)]
+    pub placebo_atts: Option<Vec<f64>>,
 }
 
 #[pymethods]

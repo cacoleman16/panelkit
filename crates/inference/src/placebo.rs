@@ -19,8 +19,14 @@ pub struct PlaceboResult {
     pub att_path: Vec<f64>,
     /// Treated unit's post/pre RMSPE ratio (the test statistic).
     pub treated_ratio: f64,
-    /// Placebo RMSPE ratios, one per donor.
+    /// Placebo RMSPE ratios, one per donor (dimensionless test statistics —
+    /// these drive the p-value).
     pub placebo_ratios: Vec<f64>,
+    /// Placebo ATTs (mean post-period gap per placebo fit), in **outcome
+    /// units**, aligned with `placebo_ratios`. Under no effect these are null
+    /// draws of the ATT estimator — the right reference for an ATT-scale SE
+    /// and confidence interval. (The ratios are not: they are unitless.)
+    pub placebo_atts: Vec<f64>,
     /// One-sided p-value: P(placebo ratio ≥ treated ratio).
     pub p_value: f64,
 }
@@ -58,7 +64,7 @@ pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
     // in parallel (when the `parallel` feature is on); the per-donor result does
     // not depend on ordering, so the output is deterministic regardless.
     let work: Vec<usize> = (0..donors.len()).collect();
-    let placebo_ratios: Vec<f64> = crate::parallel::par_map_items(work, |idx| {
+    let placebo_fits: Vec<(f64, f64)> = crate::parallel::par_map_items(work, |idx| {
         let d = donors[idx];
         let pool: Vec<usize> = donors
             .iter()
@@ -67,17 +73,19 @@ pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
             .map(|(_, &u)| u)
             .collect();
         if pool.is_empty() {
-            return f64::NAN;
+            return (f64::NAN, f64::NAN);
         }
         let (pre, post) = donor_blocks(panel, &pool, t0);
         let y_pre: Vec<f64> = (0..t0).map(|p| panel.outcome(d, p)).collect();
         let y_post: Vec<f64> = (t0..t).map(|p| panel.outcome(d, p)).collect();
         let fit = fit_series(&y_pre, &y_post, &pre, &post, pool, cfg.ridge);
-        fit.rmspe_ratio()
+        (fit.rmspe_ratio(), fit.att)
     })
     .into_iter()
-    .filter(|r| !r.is_nan())
+    .filter(|(r, _)| !r.is_nan())
     .collect();
+    let placebo_ratios: Vec<f64> = placebo_fits.iter().map(|&(r, _)| r).collect();
+    let placebo_atts: Vec<f64> = placebo_fits.iter().map(|&(_, a)| a).collect();
 
     let n = placebo_ratios.len();
     let n_extreme = placebo_ratios
@@ -93,6 +101,7 @@ pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
         att_path: treated_fit.att_path,
         treated_ratio,
         placebo_ratios,
+        placebo_atts,
         p_value,
     }
 }

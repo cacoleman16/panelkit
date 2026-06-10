@@ -115,3 +115,52 @@ fn jackknife_se_positive_for_varying() {
     let est = vec![1.0, 2.0, 3.0, 4.0, 5.0];
     assert!(jackknife_se(&est) > 0.0);
 }
+
+#[test]
+fn placebo_atts_are_outcome_scale_nulls() {
+    // The placebo engine reports both the dimensionless RMSPE ratios (test
+    // statistics → p-value) and the placebo ATTs (outcome units → SE/CI).
+    // Scaling the panel by c must scale the ATTs by c and leave the ratios
+    // and p-value unchanged.
+    use panelkit_estimators::sc::synthetic::ScConfig;
+    use panelkit_estimators::Panel;
+    use panelkit_inference::sc_placebo;
+    use panelkit_linalg::rng::Xoshiro256pp;
+    use panelkit_linalg::Mat;
+
+    let (n, t, t0) = (10, 24, 18);
+    let mut rng = Xoshiro256pp::seed_from_u64(99);
+    let mut y = Mat::zeros(n, t);
+    for i in 0..n {
+        let level = 50.0 + 5.0 * rng.next_normal();
+        for p in 0..t {
+            y.set(i, p, level + rng.next_normal());
+        }
+    }
+    let c = 1000.0;
+    let mut yc = y.clone();
+    for v in yc.as_mut_slice().iter_mut() {
+        *v *= c;
+    }
+
+    let pb = sc_placebo(&Panel::block(y, &[0], t0), ScConfig::default());
+    let pbc = sc_placebo(&Panel::block(yc, &[0], t0), ScConfig::default());
+
+    assert_eq!(pb.placebo_atts.len(), pb.placebo_ratios.len());
+    assert!(
+        (pb.p_value - pbc.p_value).abs() < 1e-12,
+        "p changed on rescale"
+    );
+    for (a, ac) in pb.placebo_atts.iter().zip(pbc.placebo_atts.iter()) {
+        assert!(
+            (a * c - ac).abs() <= 1e-6 * ac.abs().max(1.0),
+            "placebo ATT not in outcome units: {a} vs {ac}"
+        );
+    }
+    for (r, rc) in pb.placebo_ratios.iter().zip(pbc.placebo_ratios.iter()) {
+        assert!(
+            (r - rc).abs() < 1e-9,
+            "ratio changed on rescale: {r} vs {rc}"
+        );
+    }
+}
