@@ -264,3 +264,30 @@ def test_treat_start_bool_and_float_rejected():
         CallawaySantAnna().fit(y, [True, -1, -1, -1])
     with pytest.raises(ValueError, match="integer"):
         CallawaySantAnna().fit(y, [3.5, -1, -1, -1])
+
+
+# --- DiD degenerate designs (added with the DiD-correctness fixes) ----------
+
+
+def test_twfe_unidentified_designs_error():
+    y = _panel(n=6, t=10)
+    with pytest.raises(ValueError, match="no estimable cohort"):
+        _panelkit.fit_twfe_py(y, [-1] * 6)          # nobody treated
+    with pytest.raises(ValueError, match="no estimable cohort"):
+        _panelkit.fit_twfe_py(y, [0] * 6)           # everyone always-treated
+    with pytest.raises(ValueError, match="absorb"):
+        _panelkit.fit_twfe_py(y, [4] * 6)           # one shared date, no controls
+
+
+def test_bacon_rejects_always_treated():
+    y = _panel(n=8, t=10)
+    with pytest.raises(ValueError, match="period 0"):
+        GoodmanBacon().fit(y, [0, 0, 4, 4, 7, 7, -1, -1])
+
+
+def test_cs_and_sa_reject_no_estimable_cohort():
+    y = _panel(n=4, t=10)
+    with pytest.raises(ValueError, match="no estimable cohort"):
+        CallawaySantAnna(control_group="notyet").fit(y, [-1, -1, -1, -1])
+    with pytest.raises(ValueError, match="no estimable cohort"):
+        SunAbraham().fit(y, [0, 0, -1, -1])
