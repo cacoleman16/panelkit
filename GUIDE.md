@@ -159,8 +159,11 @@ using base period `g − 1`. Every `ATT(g, t)` carries a unit-level **influence
 function**, so aggregations get correct standard errors and a multiplier
 bootstrap can resample them directly.
 
-**Assumptions.** Parallel trends (conditional on never-treated); no anticipation.
-Pre-treatment event-study coefficients (`e < −1`) should be ≈ 0 — a built-in
+**Assumptions.** Parallel trends (conditional on never-treated); no anticipation
+beyond the declared window (``anticipation=δ`` moves the base period to
+``g − 1 − δ``, letting units respond up to δ periods early — the event study
+then reports the anticipation response at ``e ∈ [−δ, 0)``). Pre-treatment
+event-study coefficients before the base should be ≈ 0 — a built-in
 falsification check.
 
 **Use when.** Staggered adoption; you want an honest event study and an overall
@@ -177,10 +180,18 @@ group-time ATT regresses the long-difference on `[1, X]` among the comparison
 group and subtracts the fit, removing covariate-driven differential trends. With
 no covariates it reduces exactly to the simple estimator.
 
-**Inference.** Influence-function SEs (analytic) or **multiplier (wild)
-bootstrap**, clustered by unit. *(With covariates the IF omits the
-β-estimation correction term, so those SEs are approximate; a fully
-doubly-robust variant — adding an IPW propensity model — is the next step.)*
+**Aggregations.** The event study by relative time; the **"simple" overall**
+(cohort-size-weighted average over post (g,t) cells — longer-exposed cohorts
+count more); and the **"group" overall** (`.overall_group_att`) — the
+cohort-size-weighted average of per-cohort ATTs, C&S's recommended headline
+number. Per-cohort ATTs are exposed as `.group_att`/`.group_cohort`.
+
+**Inference.** Influence-function SEs (analytic, including the
+weight-estimation and covariate first-step terms), or
+``inference="bootstrap"``: a **multiplier (wild) bootstrap** on the influence
+functions producing **simultaneous sup-t confidence bands** for the event
+study (`.event_bands`, `.band_crit`) — the paper's recommended joint
+inference. ``.plot()`` draws the event study with the bands.
 
 ---
 

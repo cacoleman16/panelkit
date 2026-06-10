@@ -75,6 +75,11 @@ pub struct AggEffect {
     pub key: i64,
     pub att: f64,
     pub se: f64,
+    /// Unit-level influence function of the aggregate (length N, total-N
+    /// scaling, including the weight-estimation term) — empty when the
+    /// producing estimator does not expose one (e.g. Sun-Abraham). Feeds the
+    /// multiplier bootstrap / uniform bands.
+    pub influence: Vec<f64>,
 }
 
 /// Full Callaway–Sant'Anna result.
@@ -82,8 +87,19 @@ pub struct AggEffect {
 pub struct CsResult {
     pub group_time: Vec<GroupTimeAtt>,
     pub event_study: Vec<AggEffect>,
+    /// Per-cohort aggregation: `key` = cohort g, `att` = the average of that
+    /// cohort's post-treatment ATT(g,t).
+    pub group_study: Vec<AggEffect>,
+    /// "Simple" overall ATT: cohort-size-weighted average over post (g,t) cells.
     pub overall_att: f64,
     pub overall_se: f64,
+    /// Influence function of the simple overall ATT (length N).
+    pub overall_influence: Vec<f64>,
+    /// "Group" overall ATT (C&S's headline recommendation): cohort-size-weighted
+    /// average of the per-cohort ATT_g — every cohort's exposure counts equally
+    /// per unit, regardless of how many post periods it has.
+    pub overall_group_att: f64,
+    pub overall_group_se: f64,
 }
 
 /// SE of an influence vector: `sqrt((1/N²) Σ_i IF_i²)`.
@@ -113,6 +129,20 @@ pub fn fit(panel: &Panel) -> CsResult {
 
 /// Fit Callaway–Sant'Anna with an explicit comparison group.
 pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
+    fit_with_anticipation(panel, control, 0)
+}
+
+/// Fit Callaway–Sant'Anna allowing `anticipation` periods of treatment
+/// anticipation: the base period moves to `g − 1 − anticipation`, so units may
+/// respond up to `anticipation` periods before formal adoption without
+/// contaminating the baseline. Event-study entries at `e ∈ [-anticipation, 0)`
+/// then measure the anticipation response; the overall ATT still aggregates
+/// `e ≥ 0` only.
+pub fn fit_with_anticipation(
+    panel: &Panel,
+    control: ControlGroup,
+    anticipation: usize,
+) -> CsResult {
     let n = panel.n_units();
     let t = panel.n_periods();
     let never: Vec<usize> = panel.never_treated_units();
@@ -123,8 +153,12 @@ pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
         );
     }
 
-    // Cohorts with a usable base period (g >= 1).
-    let cohorts: Vec<usize> = panel.cohorts().into_iter().filter(|&g| g >= 1).collect();
+    // Cohorts with a usable base period (g − 1 − anticipation >= 0).
+    let cohorts: Vec<usize> = panel
+        .cohorts()
+        .into_iter()
+        .filter(|&g| g > anticipation)
+        .collect();
 
     // Units in each cohort.
     let cohort_units = |g: usize| -> Vec<usize> {
@@ -133,19 +167,21 @@ pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
             .collect()
     };
 
-    // Comparison set for cohort `g` at evaluation `period` (base = g-1):
+    // Comparison set for cohort `g` at evaluation `period` (base = g-1-a):
     // - NeverTreated: the never-treated units.
-    // - NotYetTreated: units untreated at BOTH the base and the evaluation
-    //   period and not in cohort g (i.e. treat_start None or > max(base, period)).
+    // - NotYetTreated: units whose own anticipation-adjusted start `s - a`
+    //   falls strictly after BOTH the base and the evaluation period, and not
+    //   in cohort g.
     let comparison = |g: usize, period: usize| -> Vec<usize> {
+        let base = g - 1 - anticipation;
         match control {
             ControlGroup::NeverTreated => never.clone(),
             ControlGroup::NotYetTreated => {
-                let cutoff = (g - 1).max(period);
+                let cutoff = base.max(period);
                 (0..n)
                     .filter(|&i| match panel.treat_start()[i] {
                         None => true,
-                        Some(s) => s > cutoff && s != g,
+                        Some(s) => s.saturating_sub(anticipation) > cutoff && s != g,
                     })
                     .collect()
             }
@@ -160,7 +196,7 @@ pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
         if ng == 0 {
             continue;
         }
-        let base = g - 1;
+        let base = g - 1 - anticipation;
         for period in 0..t {
             if period == base {
                 continue; // base period: ATT ≡ 0 by construction
@@ -306,6 +342,7 @@ pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
             key: 0,
             att,
             se: se_from_if(&agg_if),
+            influence: agg_if,
         })
     };
 
@@ -324,9 +361,44 @@ pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
         }
     }
 
-    // Overall ATT: cohort-size-weighted average of post-treatment ATT(g,t).
+    // Overall ATT ("simple"): cohort-size-weighted average over post (g,t) cells.
     let post: Vec<&GroupTimeAtt> = group_time.iter().filter(|gt| gt.event_time >= 0).collect();
-    let (overall_att, overall_se) = match aggregate(&post) {
+    let (overall_att, overall_se, overall_influence) = match aggregate(&post) {
+        Some(agg) => (agg.att, agg.se, agg.influence),
+        None => (0.0, 0.0, Vec::new()),
+    };
+
+    // Per-cohort ("group") aggregation: ATT_g = average of cohort g's post
+    // cells. Within a cohort the member weights are equal and the wif term
+    // vanishes (the shares are identical), so `aggregate` yields the fixed-
+    // weight average with the correct IF.
+    let mut group_study: Vec<AggEffect> = Vec::new();
+    for &g in &cohorts {
+        let cells: Vec<&GroupTimeAtt> = group_time
+            .iter()
+            .filter(|gt| gt.cohort == g && gt.event_time >= 0)
+            .collect();
+        if let Some(mut agg) = aggregate(&cells) {
+            agg.key = g as i64;
+            group_study.push(agg);
+        }
+    }
+    // Overall "group" ATT (C&S's recommended headline): cohort-size-weighted
+    // average of the ATT_g — feed the per-cohort aggregates back through the
+    // same machinery so the estimated cohort shares contribute their wif term.
+    let group_members: Vec<GroupTimeAtt> = group_study
+        .iter()
+        .map(|agg| GroupTimeAtt {
+            cohort: agg.key as usize,
+            period: 0,
+            event_time: 0,
+            att: agg.att,
+            se: agg.se,
+            influence: agg.influence.clone(),
+        })
+        .collect();
+    let member_refs: Vec<&GroupTimeAtt> = group_members.iter().collect();
+    let (overall_group_att, overall_group_se) = match aggregate(&member_refs) {
         Some(agg) => (agg.att, agg.se),
         None => (0.0, 0.0),
     };
@@ -334,7 +406,11 @@ pub fn fit_with(panel: &Panel, control: ControlGroup) -> CsResult {
     CsResult {
         group_time,
         event_study,
+        group_study,
         overall_att,
         overall_se,
+        overall_influence,
+        overall_group_att,
+        overall_group_se,
     }
 }

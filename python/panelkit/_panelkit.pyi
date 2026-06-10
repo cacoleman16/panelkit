@@ -42,6 +42,14 @@ class DiDResult:
     event_time: list[int]
     event_att: list[float]
     event_se: list[float]
+    event_lo: list[float]
+    event_hi: list[float]
+    band_crit: Optional[float]
+    group_cohort: list[int]
+    group_att: list[float]
+    group_se: list[float]
+    overall_group_att: Optional[float]
+    overall_group_se: Optional[float]
     def __repr__(self) -> str: ...
 
 class BaconComponent:
@@ -204,6 +212,11 @@ def fit_callaway_py(
     cohorts: Sequence[int],
     control: str = ...,
     covariates: Optional[npt.NDArray[np.float64]] = ...,
+    anticipation: int = ...,
+    bands: bool = ...,
+    n_reps: int = ...,
+    seed: int = ...,
+    level: float = ...,
 ) -> DiDResult: ...
 def fit_sunab_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> DiDResult: ...
 def bacon_decompose_py(y: npt.NDArray[np.float64], cohorts: Sequence[int]) -> BaconResult: ...
