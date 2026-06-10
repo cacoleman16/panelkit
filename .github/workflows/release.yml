@@ -19,6 +19,8 @@ jobs:
   build-wheels:
     name: Wheels (${{ matrix.os }} ${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # Guard against runner-queue stalls (a retired image can queue for 24 h).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -27,8 +29,8 @@ jobs:
             target: x86_64
           - os: ubuntu-latest   # Linux ARM64 (manylinux, cross-compiled)
             target: aarch64
-          - os: macos-13        # macOS Intel
-            target: x86_64
+          - os: macos-latest    # macOS Intel, cross-compiled from the ARM
+            target: x86_64      # runner (GitHub retired the macos-13 image)
           - os: macos-latest    # macOS Apple Silicon
             target: aarch64
           - os: windows-latest  # Windows x64
