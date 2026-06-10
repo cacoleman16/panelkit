@@ -21,6 +21,7 @@ class SCResult:
     ci_lower: Optional[float]
     ci_upper: Optional[float]
     inference_distribution: Optional[list[float]]
+    placebo_atts: Optional[list[float]]
     def __repr__(self) -> str: ...
 
 class CPASCResult:

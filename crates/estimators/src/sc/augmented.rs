@@ -11,9 +11,15 @@
 //! ```text
 //!   ŷ_post[t] = donor_post[t,·]·w  +  (y_pre − Z₀ w)ᵀ η_t
 //! ```
-//! where `w` are the SC weights, `Z₀` the donor pre-period block, and
-//! `η_t = (Z₀ Z₀ᵀ + λI)⁻¹ Z₀ donor_post[t,·]` is the ridge map from pre to
-//! post outcomes. When SC fits perfectly (imbalance ≈ 0), ASC = SC.
+//! where `w` are the SC weights, `Z₀` the donor pre-period block, and `η_t` is
+//! the ridge map from pre to post outcomes, fitted **with an intercept** as in
+//! the paper — i.e. on donor-centered data:
+//! `η_t = (Z̃₀ Z̃₀ᵀ + λI)⁻¹ Z̃₀ donor_post[t,·]` with `Z̃₀ = Z₀ − z̄₀ 1ᵀ`
+//! (each pre-period row centered across donors). The intercept itself cancels
+//! in the correction because `Σ w = 1`, but *estimating* η on centered data is
+//! what makes the estimator translation-invariant: with the raw (uncentered)
+//! Gram, adding a constant to every outcome changes the ATT. When SC fits
+//! perfectly (imbalance ≈ 0), ASC = SC.
 
 use crate::panel::Panel;
 use crate::result::ScFit;
@@ -87,19 +93,44 @@ pub fn fit_series(
         .map(|(a, b)| a - b)
         .collect();
 
-    // 3. Ridge map from donor pre-outcomes to post-outcomes:
-    //    G = Z₀ Z₀ᵀ  (T_pre × T_pre), factor (G + λI) once.
-    let g = syrk_aat(z0); // T_pre × T_pre
+    // 3. Ridge map from donor pre-outcomes to post-outcomes, fitted with an
+    //    intercept: center each pre-period row across donors (Z̃₀ = Z₀ − z̄₀1ᵀ)
+    //    and form G = Z̃₀ Z̃₀ᵀ (T_pre × T_pre). Centering the target is
+    //    unnecessary — Z̃₀·1 = 0, so the donor-mean component of the rhs drops
+    //    out automatically. Without this, the estimator is not translation-
+    //    invariant (adding a constant to every outcome changes the ATT).
     let t_pre = z0.rows();
+    let j_donors = z0.cols();
+    let mut zc = z0.clone();
+    for i in 0..t_pre {
+        let mut mean = 0.0;
+        for j in 0..j_donors {
+            mean += zc.get(i, j);
+        }
+        mean /= j_donors.max(1) as f64;
+        for j in 0..j_donors {
+            zc.set(i, j, zc.get(i, j) - mean);
+        }
+    }
+    let g = syrk_aat(&zc); // T_pre × T_pre, centered Gram
     let lambda = cfg.aug_lambda.unwrap_or_else(|| {
-        // Default: 0.1 × mean diagonal of G (mean spectral scale).
+        // Default: 0.1 × mean diagonal of the centered Gram (mean spectral
+        // scale of the donor *variation*, invariant to the outcome level).
         let mut tr = 0.0;
         for i in 0..t_pre {
             tr += g.get(i, i);
         }
         0.1 * tr / t_pre.max(1) as f64
     });
-    let chol = Cholesky::new_ridge(&g, lambda).expect("augmentation ridge system SPD");
+    // λ > 0 makes G + λI SPD. A non-positive λ only arises when the donors
+    // carry zero cross-sectional variation (centered Gram ≡ 0) — then there is
+    // nothing for the outcome model to learn and the augmentation is skipped
+    // (ASC = SC).
+    let chol = if lambda > 0.0 {
+        Some(Cholesky::new_ridge(&g, lambda).expect("centered Gram + λI is SPD for λ > 0"))
+    } else {
+        None
+    };
 
     // 4. Augmented counterfactual per post period.
     let t_post = donor_post.rows();
@@ -108,10 +139,15 @@ pub fn fit_series(
         let dpost_row = donor_post.row_copy(t); // length J
                                                 // SC part: donor_post[t,·] · w
         let sc_part: f64 = dpost_row.iter().zip(w.iter()).map(|(a, b)| a * b).sum();
-        // Ridge map: η_t = (G + λI)⁻¹ Z₀ donor_post[t,·]
-        let rhs = matvec(z0, &dpost_row); // T_pre
-        let eta = chol.solve_vec(&rhs); // T_pre
-        let aug: f64 = imbalance.iter().zip(eta.iter()).map(|(a, b)| a * b).sum();
+        // Ridge map: η_t = (Z̃₀Z̃₀ᵀ + λI)⁻¹ Z̃₀ donor_post[t,·]
+        let aug = match &chol {
+            Some(chol) => {
+                let rhs = matvec(&zc, &dpost_row); // T_pre
+                let eta = chol.solve_vec(&rhs); // T_pre
+                imbalance.iter().zip(eta.iter()).map(|(a, b)| a * b).sum()
+            }
+            None => 0.0,
+        };
         cf_post[t] = sc_part + aug;
     }
 
