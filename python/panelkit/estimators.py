@@ -276,7 +276,12 @@ class SyntheticControl:
 class AugmentedSC:
     """Augmented Synthetic Control (Ben-Michael, Feller & Rothstein 2021).
 
-    Corrects residual pre-treatment imbalance with a ridge outcome model.
+    Corrects residual pre-treatment imbalance with a ridge outcome model
+    (fitted with an intercept, so the estimator is translation-invariant).
+
+    ``inference="placebo"`` runs the in-space placebo test, refitting ASC for
+    each donor: p-value from the RMSPE-ratio rank, SE/CI from the ATT-scale
+    placebo null. ``"block"``/``"stationary"`` bootstrap the post-period gap.
     """
 
     def __init__(
@@ -289,7 +294,7 @@ class AugmentedSC:
         n_reps: int = 2000,
         seed: int = 0,
     ):
-        _check_inference(inference, ("block", "stationary"), "AugmentedSC")
+        _check_inference(inference, ("placebo", "block", "stationary"), "AugmentedSC")
         if aug_lambda is not None and not (float(aug_lambda) > 0.0):
             raise ValueError(
                 f"aug_lambda must be > 0 (or None for the automatic choice); got {aug_lambda}"
@@ -308,7 +313,8 @@ class AugmentedSC:
         treat_time = _as_period("treat_time", treat_time)
         _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_asc(
-            mat, treated, treat_time, self.sc_ridge, self.aug_lambda
+            mat, treated, treat_time, self.sc_ridge, self.aug_lambda,
+            self.inference == "placebo", self.level,
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
@@ -330,8 +336,13 @@ class SyntheticDiD:
     """Synthetic Difference-in-Differences (Arkhangelsky et al. 2021).
 
     The recommended general-purpose default: unit + time weights feeding a
-    doubly-weighted 2×2 difference-in-differences. Pass ``inference="block"`` or
-    ``"stationary"`` for a bootstrap SE + CI on the ATT.
+    doubly-weighted 2×2 difference-in-differences.
+
+    Inference options: ``"jackknife"`` — the fixed-weights leave-one-unit-out
+    jackknife of Arkhangelsky et al. / ``synthdid`` (needs ≥ 2 treated units);
+    ``"placebo"`` — in-space placebo refitting SDID per donor (works with a
+    single treated unit); ``"block"``/``"stationary"`` — bootstrap of the
+    post-period gap path.
     """
 
     def __init__(
@@ -343,7 +354,9 @@ class SyntheticDiD:
         n_reps: int = 2000,
         seed: int = 0,
     ):
-        _check_inference(inference, ("block", "stationary"), "SyntheticDiD")
+        _check_inference(
+            inference, ("placebo", "jackknife", "block", "stationary"), "SyntheticDiD"
+        )
         self.zeta_scale = zeta_scale
         self.inference = inference
         self.level = _check_level(level)
@@ -356,7 +369,17 @@ class SyntheticDiD:
         treated = _as_index_list("treated", treated)
         treat_time = _as_period("treat_time", treat_time)
         _validate_block(mat, treated, treat_time)
-        raw = _panelkit.fit_sdid(mat, treated, treat_time, self.zeta_scale)
+        rust_inference = (
+            self.inference if self.inference in ("placebo", "jackknife") else "none"
+        )
+        if rust_inference == "jackknife" and len(treated) < 2:
+            raise ValueError(
+                "the SDID jackknife needs >= 2 treated units; use inference='placebo' "
+                "for a single treated unit"
+            )
+        raw = _panelkit.fit_sdid(
+            mat, treated, treat_time, self.zeta_scale, rust_inference, self.level
+        )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
         )

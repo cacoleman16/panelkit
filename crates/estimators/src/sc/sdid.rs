@@ -203,3 +203,102 @@ fn std_dev(x: &[f64]) -> f64 {
     let var = x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
     var.sqrt()
 }
+
+/// The SDID estimate for explicit unit/time weights and unit sets — the
+/// weighted 2×2 evaluated without re-solving the weight problems. Used by the
+/// fixed-weights jackknife below.
+fn att_given_weights(
+    panel: &Panel,
+    t0: usize,
+    treated: &[usize],
+    controls: &[usize],
+    omega: &[f64],
+    lambda: &[f64],
+) -> f64 {
+    let t = panel.n_periods();
+    let t_post = t - t0;
+    let ytr = panel.unit_mean(treated);
+    let ytr_pre_lambda: f64 = (0..t0).map(|tt| lambda[tt] * ytr[tt]).sum();
+    let ytr_post: f64 = ytr[t0..].iter().sum::<f64>() / t_post as f64;
+    let mut ctrl_term = 0.0;
+    for (jc, &u) in controls.iter().enumerate() {
+        let post_avg: f64 = (t0..t).map(|p| panel.outcome(u, p)).sum::<f64>() / t_post as f64;
+        let pre_l: f64 = (0..t0).map(|p| lambda[p] * panel.outcome(u, p)).sum();
+        ctrl_term += omega[jc] * (post_avg - pre_l);
+    }
+    (ytr_post - ytr_pre_lambda) - ctrl_term
+}
+
+/// Leave-one-unit-out SDID estimates with **fixed weights** (the `synthdid`
+/// jackknife): solve the unit/time weight problems once on the full panel,
+/// then drop each unit in turn — re-averaging the treated side, or removing
+/// and renormalizing a control's ω — and re-evaluate the weighted 2×2.
+/// Requires ≥ 2 treated units (dropping the only treated unit leaves no
+/// estimate). A control carrying (numerically) all of ω is skipped — its
+/// removal leaves no donor weight to renormalize.
+pub fn jackknife_loo_atts(panel: &Panel, t0: usize, cfg: SdidConfig) -> Vec<f64> {
+    let treated = panel.treated_units();
+    let controls = panel.never_treated_units();
+    assert!(
+        treated.len() >= 2,
+        "the SDID jackknife needs >= 2 treated units; use placebo inference otherwise"
+    );
+    let fit = fit_at(panel, t0, cfg);
+    let omega = fit.weights.clone();
+    let lambda = sdid_time_weights(panel, t0);
+
+    let mut loo = Vec::with_capacity(treated.len() + controls.len());
+    for drop_t in &treated {
+        let rest: Vec<usize> = treated.iter().copied().filter(|u| u != drop_t).collect();
+        loo.push(att_given_weights(
+            panel, t0, &rest, &controls, &omega, &lambda,
+        ));
+    }
+    for (jc, _) in controls.iter().enumerate() {
+        let wj = omega[jc];
+        if wj >= 1.0 - 1e-12 {
+            continue; // sole donor: nothing to renormalize over
+        }
+        let rest_controls: Vec<usize> = controls
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != jc)
+            .map(|(_, &u)| u)
+            .collect();
+        let rest_omega: Vec<f64> = omega
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != jc)
+            .map(|(_, &w)| w / (1.0 - wj))
+            .collect();
+        loo.push(att_given_weights(
+            panel,
+            t0,
+            &treated,
+            &rest_controls,
+            &rest_omega,
+            &lambda,
+        ));
+    }
+    loo
+}
+
+/// The SDID time weights λ for a panel (re-solving the time-weight problem
+/// exactly as `fit_at` does). Exposed for the fixed-weights jackknife.
+fn sdid_time_weights(panel: &Panel, t0: usize) -> Vec<f64> {
+    let t = panel.n_periods();
+    let t_post = t - t0;
+    let (ctrl_pre, _) = panel.donor_pre(t0);
+    let (ctrl_post, _) = panel.donor_post(t0);
+    let j = ctrl_pre.cols();
+    let design_time = ctrl_pre.transpose();
+    let mut ctrl_post_avg = vec![0.0; j];
+    for jc in 0..j {
+        let mut s = 0.0;
+        for tt in 0..t_post {
+            s += ctrl_post.get(tt, jc);
+        }
+        ctrl_post_avg[jc] = s / t_post as f64;
+    }
+    simplex_with_intercept(&design_time, &ctrl_post_avg, 0.0)
+}
