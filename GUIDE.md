@@ -73,13 +73,17 @@ units; otherwise placebo.
 counterfactual.
 
 **How.** Treat the treated post-period cells as *missing* and complete the
-outcome matrix with **SoftImpute** — iterate (fill missing with the current
-estimate → SVD → soft-threshold the singular values by `λ` → reconstruct) to a
-low-rank fixed point. `λ` is chosen by cross-validation over held-out observed
-cells (deterministic given the seed).
+outcome matrix as `L + Γ⊕Δ`: **unpenalized two-way fixed effects** (unit and
+time levels, as in the paper) plus a low-rank `L` found by **SoftImpute** —
+iterate (re-fit FE on observed cells → fill missing with the current `L` → SVD
+→ soft-threshold the singular values by `λ` → reconstruct) to a fixed point.
+Penalizing only `L` matters: without the FE terms the outcome *level* itself
+gets shrunk by `λ`, biasing every imputed cell. `λ` is chosen by
+cross-validation over held-out observed cells, walking the grid from large to
+small λ with warm starts (deterministic given the seed).
 
 **Assumptions.** The untreated potential-outcome matrix is approximately
-low-rank (a latent-factor structure).
+low-rank after removing unit and time levels (a latent-factor structure).
 
 **Use when.** Many treated cells / a genuine factor structure; you do not want to
 commit to explicit unit weights. It is the intrinsically heavy estimator (a full
