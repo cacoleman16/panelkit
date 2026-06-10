@@ -8,14 +8,3 @@ authors.workspace = true
 repository.workspace = true
 description = "Pure-Rust, dependency-free dense linear algebra and optimization core for panelkit."
 
-[features]
-default = []
-# Optional data-parallelism for the heavier kernels. Off by default so the core
-# stays a zero-dependency building block reusable by sibling projects.
-parallel = ["dep:rayon"]
-
-[dependencies]
-rayon = { workspace = true, optional = true }
-
-[dev-dependencies]
-proptest = { workspace = true }

@@ -67,7 +67,9 @@ impl Cholesky {
     /// Solve `A x = b` in place-free form, returning `x`. `b` length must equal `n`.
     pub fn solve_vec(&self, b: &[f64]) -> Vec<f64> {
         let n = self.l.rows();
-        debug_assert_eq!(b.len(), n);
+        // Hard assert: in release an over-long `b` would otherwise return the
+        // solution with leftover RHS entries appended (silent wrong shape).
+        assert_eq!(b.len(), n, "rhs length {} != system size {n}", b.len());
         let mut y = b.to_vec();
         // Forward solve L y = b.
         for i in 0..n {

@@ -33,7 +33,6 @@ pyo3 = { version = "0.25", default-features = false }
 numpy = "0.25"
 
 # Dev-only.
-proptest = "1"
 criterion = { version = "0.5", default-features = false }
 
 [profile.release]

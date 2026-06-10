@@ -103,7 +103,11 @@ impl Qr {
         for i in 0..n {
             max_diag = max_diag.max(self.packed.get(i, i).abs());
         }
-        let eps = 1e-12 * max_diag.max(1.0);
+        // Strictly *relative* threshold. (An absolute floor like
+        // `max_diag.max(1.0)` would zero every coefficient of any
+        // well-conditioned system whose scale happens to be below ~1e-12 —
+        // rank is a property of conditioning, not of units.)
+        let eps = 1e-12 * max_diag;
         let mut x = vec![0.0; n];
         for i in (0..n).rev() {
             let mut s = rhs[i];

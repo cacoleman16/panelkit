@@ -10,13 +10,10 @@ description = "Geo-experiment design: multi-method power analysis, market select
 
 [features]
 default = []
-parallel = ["dep:rayon", "panelkit-inference/parallel", "panelkit-linalg/parallel"]
+parallel = ["dep:rayon", "panelkit-inference/parallel"]
 
 [dependencies]
 panelkit-linalg = { workspace = true }
 panelkit-estimators = { workspace = true }
 panelkit-inference = { workspace = true }
 rayon = { workspace = true, optional = true }
-
-[dev-dependencies]
-proptest = { workspace = true }
