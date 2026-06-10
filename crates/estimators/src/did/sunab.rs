@@ -10,6 +10,12 @@
 //! effects are absorbed by the two-way within transform (FWL); the remaining
 //! interaction design is solved by QR. Standard errors are cluster-robust by
 //! unit and propagated to the aggregated coefficients.
+//!
+//! **Always-treated units** (cohort 0) have no within-sample reference period
+//! and are **excluded from the estimation sample**, per Sun & Abraham. Leaving
+//! them in would pool them into the never-treated reference (they carry no
+//! interaction dummies), contaminating every `γ_t` — and therefore every
+//! event-study coefficient — with their treated outcome path.
 
 use crate::did::callaway::AggEffect;
 use crate::fe::within::two_way_within;
@@ -27,8 +33,34 @@ pub struct SaResult {
     pub overall_se: f64,
 }
 
+/// A copy of `panel` restricted to the given unit rows.
+fn subpanel(panel: &Panel, keep: &[usize]) -> Panel {
+    let t = panel.n_periods();
+    let mut y = Mat::zeros(keep.len(), t);
+    let mut starts = Vec::with_capacity(keep.len());
+    for (r, &u) in keep.iter().enumerate() {
+        for p in 0..t {
+            y.set(r, p, panel.outcome(u, p));
+        }
+        starts.push(panel.treat_start()[u]);
+    }
+    Panel::new(y, starts)
+}
+
 /// Fit the Sun–Abraham interaction-weighted estimator.
 pub fn fit(panel: &Panel) -> SaResult {
+    // Drop always-treated units (no reference period; see module docs).
+    let keep: Vec<usize> = (0..panel.n_units())
+        .filter(|&i| panel.treat_start()[i] != Some(0))
+        .collect();
+    let restricted;
+    let panel = if keep.len() == panel.n_units() {
+        panel
+    } else {
+        restricted = subpanel(panel, &keep);
+        &restricted
+    };
+
     let n = panel.n_units();
     let t = panel.n_periods();
     assert!(
@@ -44,6 +76,8 @@ pub fn fit(panel: &Panel) -> SaResult {
     };
 
     // Enumerate interaction terms (g, e), e ≠ −1, present in the data.
+    // (g, e) pairs are unique by construction: each cohort g contributes one
+    // term per period.
     let mut terms: Vec<(usize, i64)> = Vec::new();
     for &g in &cohorts {
         for period in 0..t {
@@ -51,9 +85,7 @@ pub fn fit(panel: &Panel) -> SaResult {
             if e == -1 {
                 continue;
             }
-            if !terms.contains(&(g, e)) {
-                terms.push((g, e));
-            }
+            terms.push((g, e));
         }
     }
     terms.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));

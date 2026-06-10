@@ -54,10 +54,34 @@ fn require_never_treated(panel: &Panel, estimator: &str, hint: &str) -> PyResult
     Ok(())
 }
 
+/// Estimable staggered designs need at least one cohort with a pre-period
+/// (g ≥ 1). Without one, the estimators would return a confident-looking
+/// `att = 0, se = 0` — error instead.
+fn require_estimable_cohort(panel: &Panel, estimator: &str) -> PyResult<()> {
+    if !panel.cohorts().into_iter().any(|g| g >= 1) {
+        return Err(PyValueError::new_err(format!(
+            "{estimator}: no estimable cohort. Every unit is either never treated or treated \
+             from period 0 (no pre-period), so no treatment effect is identified."
+        )));
+    }
+    Ok(())
+}
+
 /// Two-way fixed-effects DiD with cluster-robust SE.
 #[pyfunction]
 pub fn fit_twfe_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyDidResult> {
     let panel = build_panel(y, cohorts)?;
+    require_estimable_cohort(&panel, "TWFE")?;
+    // The treatment dummy must survive the two-way within transform: if every
+    // unit shares one adoption date and there are no controls, D is a pure
+    // time pattern and the FE absorb it (silent att = 0 otherwise).
+    let treated_cohorts = panel.cohorts();
+    if panel.never_treated_units().is_empty() && treated_cohorts.len() == 1 {
+        return Err(PyValueError::new_err(
+            "TWFE: every unit adopts at the same period and there are no control units, so \
+             the unit and time fixed effects absorb the treatment indicator entirely.",
+        ));
+    }
     let fit = fit_twfe(&panel);
     Ok(PyDidResult {
         att: fit.att,
@@ -90,6 +114,7 @@ pub fn fit_callaway_py(
         }
     };
     let mut panel = build_panel(y, cohorts)?;
+    require_estimable_cohort(&panel, "Callaway-Sant'Anna")?;
     if cg == ControlGroup::NeverTreated {
         require_never_treated(
             &panel,
@@ -128,6 +153,7 @@ pub fn fit_callaway_py(
 #[pyfunction]
 pub fn fit_sunab_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyDidResult> {
     let panel = build_panel(y, cohorts)?;
+    require_estimable_cohort(&panel, "Sun-Abraham")?;
     require_never_treated(
         &panel,
         "Sun-Abraham",
@@ -147,6 +173,15 @@ pub fn fit_sunab_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyD
 #[pyfunction]
 pub fn bacon_decompose_py(y: PyReadonlyArray2<f64>, cohorts: Vec<i64>) -> PyResult<PyBaconResult> {
     let panel = build_panel(y, cohorts)?;
+    require_estimable_cohort(&panel, "Goodman-Bacon")?;
+    if panel.treat_start().contains(&Some(0)) {
+        return Err(PyValueError::new_err(
+            "Goodman-Bacon: units already treated at period 0 have no pre-period and cannot \
+             enter the decomposition, which would break the `twfe == sum(weight * estimate)` \
+             identity against the full-panel TWFE. Drop those units (or start the panel \
+             earlier) and re-run.",
+        ));
+    }
     let b = bacon_decompose(&panel);
     let components = b
         .components
