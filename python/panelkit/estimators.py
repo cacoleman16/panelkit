@@ -454,7 +454,14 @@ class _CPASCResult:
 
     @property
     def pooled_residual(self) -> np.ndarray:
+        """Pooled residual path of the main fit (descriptive)."""
         return np.asarray(self._raw.pooled_residual, dtype=float)
+
+    @property
+    def null_residual(self) -> np.ndarray:
+        """Pooled residual path of the null-imposed full-sample refit — the
+        exchangeable path the conformal permutation actually tests."""
+        return np.asarray(self._raw.null_residual, dtype=float)
 
     def summary(self) -> str:
         lines = [

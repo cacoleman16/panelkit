@@ -126,9 +126,13 @@ pub struct PyCpascResult {
     /// Per-unit pooling weight.
     #[pyo3(get)]
     pub unit_weight: Vec<f64>,
-    /// Pooled residual path (length T).
+    /// Pooled residual path of the main fit (length T; descriptive).
     #[pyo3(get)]
     pub pooled_residual: Vec<f64>,
+    /// Pooled residual path of the null-imposed full-sample refit (length T)
+    /// — the exchangeable path the conformal permutation tests.
+    #[pyo3(get)]
+    pub null_residual: Vec<f64>,
     /// First post-period index.
     #[pyo3(get)]
     pub t0: usize,

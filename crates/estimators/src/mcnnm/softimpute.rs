@@ -3,15 +3,30 @@
 //!
 //! The treated post-treatment entries of the outcome matrix are treated as
 //! *missing*; the control entries and treated pre-period entries are observed.
-//! We estimate a low-rank counterfactual `L` by iterating:
+//! Following the paper, the model is
 //!
-//! 1. Fill: `M = observed(Y) + missing(L)` (impute missing cells with the
-//!    current estimate).
-//! 2. Threshold: `L ← SVT_λ(M)` (soft-threshold the singular values by `λ`).
+//! ```text
+//!   Y ≈ L  +  Γ 1ᵀ  +  1 Δᵀ          (L low-rank, Γ/Δ unit & time effects)
+//! ```
 //!
-//! until `L` stabilizes. The treatment effect on each treated post entry is
-//! `Y − L`. The regularization `λ` is chosen by cross-validation over a random
-//! hold-out of observed entries (deterministic given the seed).
+//! with the nuclear-norm penalty on **L only** — the two-way fixed effects are
+//! estimated *unpenalized* (Athey et al., §8.3). This matters in practice:
+//! without the FE terms, the level component of `Y` (usually the dominant
+//! singular direction for positive outcomes like revenue) gets shrunk by `λ`,
+//! biasing every imputed cell by a fraction of the outcome *level* — the same
+//! order as the effects being measured.
+//!
+//! Block-coordinate iteration:
+//! 1. FE: alternating row/column means of `Y − L` over **observed** cells.
+//! 2. Fill: `M = observed(Y − Γ⊕Δ) + missing(L)`.
+//! 3. Threshold: `L ← SVT_λ(M)`.
+//!
+//! until the fitted matrix `L + Γ⊕Δ` stabilizes. `λ` is chosen by
+//! cross-validation over a random hold-out of observed entries, walking the
+//! grid from large to small λ with **warm starts** (Mazumder, Hastie &
+//! Tibshirani's continuation) — which also removes the spurious `λ ≈ 0` fixed
+//! point the cold-started iteration had (it returned "counterfactual = the
+//! zero fill").
 
 use crate::panel::Panel;
 use crate::result::ScFit;
@@ -26,7 +41,7 @@ pub struct McnnmConfig {
     pub lambda: Option<f64>,
     /// Max SoftImpute iterations.
     pub max_iter: usize,
-    /// Relative convergence tolerance (Frobenius).
+    /// Relative convergence tolerance (Frobenius, on the fitted matrix).
     pub tol: f64,
     /// Seed for the CV hold-out (determinism).
     pub seed: u64,
@@ -52,95 +67,165 @@ impl Default for McnnmConfig {
     }
 }
 
-/// One SoftImpute solve for a fixed `lambda`. `observed[i + j*n]` (column-major)
-/// flags whether entry `(i, j)` is observed. Returns the low-rank estimate `L`.
-fn soft_impute(
+/// The running estimate: low-rank part plus unpenalized two-way fixed effects.
+#[derive(Clone)]
+struct FitState {
+    l: Mat,
+    /// Unit (row) effects Γ, length `n`.
+    a: Vec<f64>,
+    /// Time (column) effects Δ, length `t`.
+    b: Vec<f64>,
+}
+
+impl FitState {
+    fn zeros(n: usize, t: usize) -> FitState {
+        FitState {
+            l: Mat::zeros(n, t),
+            a: vec![0.0; n],
+            b: vec![0.0; t],
+        }
+    }
+
+    /// Fitted value for cell `(i, j)`: `L[i,j] + Γ_i + Δ_j`.
+    #[inline]
+    fn fitted(&self, i: usize, j: usize) -> f64 {
+        self.l.get(i, j) + self.a[i] + self.b[j]
+    }
+}
+
+/// Re-estimate the two-way fixed effects on observed cells of `Y − L` by a few
+/// passes of alternating row/column means (exact for the two-way model on a
+/// near-balanced observation pattern; the missing block makes it iterative).
+fn update_fe(y: &Mat, observed: &[bool], state: &mut FitState) {
+    let (n, t) = y.shape();
+    for _ in 0..3 {
+        for i in 0..n {
+            let mut s = 0.0;
+            let mut c = 0usize;
+            for j in 0..t {
+                if observed[i + j * n] {
+                    s += y.get(i, j) - state.l.get(i, j) - state.b[j];
+                    c += 1;
+                }
+            }
+            if c > 0 {
+                state.a[i] = s / c as f64;
+            }
+        }
+        for j in 0..t {
+            let mut s = 0.0;
+            let mut c = 0usize;
+            for i in 0..n {
+                if observed[i + j * n] {
+                    s += y.get(i, j) - state.l.get(i, j) - state.a[i];
+                    c += 1;
+                }
+            }
+            if c > 0 {
+                state.b[j] = s / c as f64;
+            }
+        }
+    }
+}
+
+/// One SoftImpute solve for a fixed `lambda`, warm-started from `state`.
+/// `observed[i + j*n]` (column-major) flags whether entry `(i, j)` is observed.
+/// Solver knobs (`max_iter`, `tol`, `max_rank`, `seed`) come from `cfg`.
+fn soft_impute_fe(
     y: &Mat,
     observed: &[bool],
     lambda: f64,
-    max_iter: usize,
-    tol: f64,
-    max_rank: Option<usize>,
-    seed: u64,
-) -> Mat {
+    cfg: &McnnmConfig,
+    mut state: FitState,
+) -> FitState {
     let (n, t) = y.shape();
-    let mut l = Mat::zeros(n, t);
     let mut m = Mat::zeros(n, t);
-    for _ in 0..max_iter {
-        // Fill: M = observed ? Y : L.
-        for idx in 0..n * t {
-            m.as_mut_slice()[idx] = if observed[idx] {
-                y.as_slice()[idx]
-            } else {
-                l.as_slice()[idx]
-            };
+    for _ in 0..cfg.max_iter {
+        // 1. Unpenalized two-way FE on the observed residual Y − L.
+        update_fe(y, observed, &mut state);
+
+        // 2. Fill: M = observed ? (Y − Γ⊕Δ) : L.
+        for j in 0..t {
+            for i in 0..n {
+                let idx = i + j * n;
+                m.as_mut_slice()[idx] = if observed[idx] {
+                    y.as_slice()[idx] - state.a[i] - state.b[j]
+                } else {
+                    state.l.as_slice()[idx]
+                };
+            }
         }
-        let (l_new, _nuc) = match max_rank {
-            Some(r) => panelkit_linalg::opt::softthresh::svt_truncated(&m, lambda, r, seed),
+
+        // 3. Threshold the low-rank part.
+        let (l_new, _nuc) = match cfg.max_rank {
+            Some(r) => panelkit_linalg::opt::softthresh::svt_truncated(&m, lambda, r, cfg.seed),
             None => svt(&m, lambda),
         };
-        // Convergence on relative Frobenius change.
+
+        // Convergence on the relative Frobenius change of L (the FE step is a
+        // deterministic function of L, so L stabilizing ⇒ the fit stabilizes).
         let mut num = 0.0;
         let mut den = 0.0;
         for idx in 0..n * t {
-            let d = l_new.as_slice()[idx] - l.as_slice()[idx];
+            let d = l_new.as_slice()[idx] - state.l.as_slice()[idx];
             num += d * d;
-            den += l.as_slice()[idx] * l.as_slice()[idx];
+            den += state.l.as_slice()[idx] * state.l.as_slice()[idx];
         }
-        l = l_new;
-        if den > 0.0 && (num / den).sqrt() < tol {
-            break;
-        }
-        if den == 0.0 && num.sqrt() < tol {
+        state.l = l_new;
+        if (den > 0.0 && (num / den).sqrt() < cfg.tol) || (den == 0.0 && num.sqrt() < cfg.tol) {
             break;
         }
     }
-    l
+    // Leave the FE consistent with the final L.
+    update_fe(y, observed, &mut state);
+    state
 }
 
-/// Largest singular value of the observed-mean-filled matrix — anchors the λ grid.
-fn sigma_max_filled(y: &Mat, observed: &[bool]) -> f64 {
+/// Largest singular value of the FE-residualized, zero-filled matrix — anchors
+/// the λ grid. (Anchoring on the raw matrix would put the whole grid at the
+/// scale of the outcome *level*, which the FE terms absorb.)
+fn sigma_max_fe_residual(y: &Mat, observed: &[bool]) -> f64 {
     let (n, t) = y.shape();
-    // Mean of observed entries.
-    let mut sum = 0.0;
-    let mut cnt = 0usize;
-    for idx in 0..n * t {
-        if observed[idx] {
-            sum += y.as_slice()[idx];
-            cnt += 1;
-        }
-    }
-    let mean = if cnt > 0 { sum / cnt as f64 } else { 0.0 };
+    let mut state = FitState::zeros(n, t);
+    update_fe(y, observed, &mut state);
     let mut m = Mat::zeros(n, t);
-    for idx in 0..n * t {
-        m.as_mut_slice()[idx] = if observed[idx] {
-            y.as_slice()[idx]
-        } else {
-            mean
-        };
+    for j in 0..t {
+        for i in 0..n {
+            let idx = i + j * n;
+            m.as_mut_slice()[idx] = if observed[idx] {
+                y.as_slice()[idx] - state.a[i] - state.b[j]
+            } else {
+                0.0
+            };
+        }
     }
     let svd = panelkit_linalg::factor::svd::Svd::new(&m);
     svd.singular_values().first().copied().unwrap_or(0.0)
 }
 
-/// Cross-validate λ over a geometric grid by holding out a random subset of
-/// observed entries and minimizing held-out MSE.
-fn cv_lambda(y: &Mat, observed: &[bool], cfg: &McnnmConfig) -> f64 {
-    let (n, t) = y.shape();
-    let smax = sigma_max_filled(y, observed);
-    if smax <= 0.0 {
-        return 0.0;
-    }
-    // Grid: 10 points geometric from 0.5·σ_max down to 0.01·σ_max.
-    let n_grid = 10;
-    let hi = 0.5 * smax;
-    let lo = 0.01 * smax;
-    let grid: Vec<f64> = (0..n_grid)
+/// Geometric λ path from `hi` down to `lo` (inclusive), `n_grid` points.
+fn lambda_path(hi: f64, lo: f64, n_grid: usize) -> Vec<f64> {
+    (0..n_grid)
         .map(|k| {
-            let frac = k as f64 / (n_grid as f64 - 1.0);
+            let frac = k as f64 / (n_grid as f64 - 1.0).max(1.0);
             hi * (lo / hi).powf(frac)
         })
-        .collect();
+        .collect()
+}
+
+/// Cross-validate λ over a geometric grid by holding out a random subset of
+/// observed entries and minimizing held-out MSE. The grid is walked from large
+/// to small λ with warm starts (continuation), so later (smaller) λs start
+/// from an informative L rather than zero.
+fn cv_lambda(y: &Mat, observed: &[bool], cfg: &McnnmConfig) -> f64 {
+    let (n, t) = y.shape();
+    let smax = sigma_max_fe_residual(y, observed);
+    if smax <= 0.0 {
+        return f64::MIN_POSITIVE;
+    }
+    // Grid: 10 points geometric from 0.5·σ_max down to 0.01·σ_max (of the
+    // FE-residual spectrum, so the grid spans the low-rank component's scale).
+    let grid = lambda_path(0.5 * smax, 0.01 * smax, 10);
 
     // Hold out ~20% of observed entries as a validation set.
     let mut rng = Xoshiro256pp::seed_from_u64(cfg.seed);
@@ -158,19 +243,13 @@ fn cv_lambda(y: &Mat, observed: &[bool], cfg: &McnnmConfig) -> f64 {
 
     let mut best_lambda = grid[0];
     let mut best_err = f64::INFINITY;
+    let mut state = FitState::zeros(n, t);
     for &lam in &grid {
-        let l = soft_impute(
-            y,
-            &train,
-            lam,
-            cfg.max_iter,
-            cfg.tol,
-            cfg.max_rank,
-            cfg.seed,
-        );
+        state = soft_impute_fe(y, &train, lam, cfg, state);
         let mut err = 0.0;
         for &idx in &val_idx {
-            let d = y.as_slice()[idx] - l.as_slice()[idx];
+            let (i, j) = (idx % n, idx / n);
+            let d = y.as_slice()[idx] - state.fitted(i, j);
             err += d * d;
         }
         err /= val_idx.len() as f64;
@@ -206,20 +285,23 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: McnnmConfig) -> ScFit {
     }
 
     let lambda = cfg.lambda.unwrap_or_else(|| cv_lambda(&y, &observed, &cfg));
-    let l = soft_impute(
-        &y,
-        &observed,
-        lambda,
-        cfg.max_iter,
-        cfg.tol,
-        cfg.max_rank,
-        cfg.seed,
-    );
+    // Continuation: walk a short warm-started path from a large λ down to the
+    // target. Besides speed, this removes the cold-start λ ≈ 0 trivial fixed
+    // point (L = 0 fills missing cells with zero and "converges" immediately).
+    let smax = sigma_max_fe_residual(&y, &observed);
+    let mut state = FitState::zeros(n, t);
+    if smax > 0.0 && lambda < 0.5 * smax {
+        for lam in lambda_path(0.5 * smax, lambda, 5) {
+            state = soft_impute_fe(&y, &observed, lam, &cfg, state);
+        }
+    } else {
+        state = soft_impute_fe(&y, &observed, lambda, &cfg, state);
+    }
 
     let treated = panel.treated_units();
     let t_post = t - t0;
 
-    // ATT path: per post period, average over treated units of (Y − L).
+    // ATT path: per post period, average over treated units of (Y − fitted).
     let mut att_path = vec![0.0; t_post];
     let mut cf_post = vec![0.0; t_post];
     let mut treated_post = vec![0.0; t_post];
@@ -228,8 +310,9 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: McnnmConfig) -> ScFit {
         let mut cf = 0.0;
         let mut yv = 0.0;
         for &u in &treated {
-            eff += y.get(u, p) - l.get(u, p);
-            cf += l.get(u, p);
+            let f = state.fitted(u, p);
+            eff += y.get(u, p) - f;
+            cf += f;
             yv += y.get(u, p);
         }
         let inv = 1.0 / treated.len() as f64;
@@ -239,12 +322,12 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: McnnmConfig) -> ScFit {
     }
     let att = att_path.iter().sum::<f64>() / t_post.max(1) as f64;
 
-    // Pre-period fit RMSE on treated units (observed cells imputed by L).
+    // Pre-period fit RMSE on treated units (observed cells, fitted by L + FE).
     let mut pre_ss = 0.0;
     let mut pre_cnt = 0usize;
     for &u in &treated {
         for p in 0..t0 {
-            let d = y.get(u, p) - l.get(u, p);
+            let d = y.get(u, p) - state.fitted(u, p);
             pre_ss += d * d;
             pre_cnt += 1;
         }

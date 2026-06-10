@@ -5,8 +5,19 @@
 //! fitting one augmented SC per treated unit and then *pooling* the per-unit
 //! effects yields a conservative, well-calibrated estimator. The pooling is
 //! empirical-Bayes: units that fit poorly (high pre-period MSPE) are
-//! down-weighted. Inference is by conformal block permutation on the pooled
-//! residual path, which gives a near-0% false-positive rate.
+//! down-weighted.
+//!
+//! Inference is by **conformal block permutation under a null-imposed refit**
+//! (Chernozhukov–Wüthrich–Zhu style): to test H₀ of no effect, each treated
+//! unit's SC weights are re-estimated on **all T periods** (under H₀ the post
+//! periods are just more untreated observations), the resulting residual paths
+//! are pooled with weights computed from the same full-sample fit, and the
+//! post-period block of that path is compared against all circularly-shifted
+//! blocks. Estimating everything symmetrically in time is what makes the
+//! blocks (approximately) exchangeable under H₀ — permuting the *main* fit's
+//! residuals would mix in-sample pre-period imbalance with out-of-sample
+//! post-period prediction error and reject too often exactly when the fit is
+//! good.
 //!
 //! Three pooling targets:
 //! - [`PoolMode::Mspe`] (**CP-ASC**): weight unit `d` by `1 / (m_d + median(m))`,
@@ -22,6 +33,8 @@
 use crate::panel::Panel;
 use crate::sc::augmented::{fit_series as asc_fit_series, AscConfig};
 use panelkit_linalg::ops::matmul::matvec;
+use panelkit_linalg::opt::simplex::sc_weights;
+use panelkit_linalg::Mat;
 
 /// Pooling target for the CP-ASC family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,8 +90,13 @@ pub struct CpascFit {
     pub att: f64,
     /// Per-unit fits.
     pub units: Vec<UnitFit>,
-    /// Pooled residual path (Σ_d w_d residual_d), length `T`.
+    /// Pooled residual path of the **main** fit (Σ_d w_d residual_d, pre-period
+    /// SC imbalance then post-period effects), length `T`. Descriptive — the
+    /// p-value is computed from `null_residual`, not from this path.
     pub pooled_residual: Vec<f64>,
+    /// Pooled residual path of the **null-imposed full-sample refit** (the
+    /// exchangeable path the conformal permutation actually tests), length `T`.
+    pub null_residual: Vec<f64>,
     /// Conformal block-permutation p-value for H₀: no effect.
     pub p_value: f64,
     /// First post-period index.
@@ -151,13 +169,57 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: CpascConfig) -> CpascFit {
         }
     }
 
-    // Conformal block-permutation p-value on the pooled residual path.
-    let p_value = conformal_pvalue(&pooled_residual, t0, cfg.block_len);
+    // --- Conformal inference under the imposed null (CWZ-style). ---
+    // Under H₀ (no effect) every period is untreated, so the SC weights may be
+    // estimated on the FULL sample; the resulting residual path treats all T
+    // periods symmetrically and its blocks are (approximately) exchangeable.
+    // The main fit's residuals are NOT exchangeable — the pre block is the
+    // in-sample quantity the weight solve minimizes while the post block is
+    // out-of-sample prediction error — which made the old permutation reject
+    // ~2× the nominal rate precisely when the model fit well. The pooling
+    // weights for the null path are likewise computed from full-sample
+    // (time-symmetric) MSPE / baseline.
+    let mut z_full = Mat::zeros(t, donor_ids.len());
+    for (jc, &d) in donor_ids.iter().enumerate() {
+        for p in 0..t {
+            z_full.set(p, jc, panel.outcome(d, p));
+        }
+    }
+    let mut null_units: Vec<UnitFit> = Vec::with_capacity(treated.len());
+    for &u in &treated {
+        let y_full: Vec<f64> = (0..t).map(|p| panel.outcome(u, p)).collect();
+        let w = sc_weights(&z_full, &y_full, cfg.asc.sc_ridge).w;
+        let fit_full = matvec(&z_full, &w);
+        let residual: Vec<f64> = y_full
+            .iter()
+            .zip(fit_full.iter())
+            .map(|(a, b)| a - b)
+            .collect();
+        let mspe = residual.iter().map(|r| r * r).sum::<f64>() / t.max(1) as f64;
+        let baseline = y_full.iter().sum::<f64>() / t.max(1) as f64;
+        null_units.push(UnitFit {
+            unit: u,
+            att: 0.0,
+            mspe,
+            baseline,
+            weight: 0.0,
+            residual,
+        });
+    }
+    assign_weights(&mut null_units, cfg.mode);
+    let mut null_residual = vec![0.0; t];
+    for uf in &null_units {
+        for (k, &r) in uf.residual.iter().enumerate() {
+            null_residual[k] += uf.weight * r;
+        }
+    }
+    let p_value = conformal_pvalue(&null_residual, t0, cfg.block_len);
 
     CpascFit {
         att,
         units,
         pooled_residual,
+        null_residual,
         p_value,
         t0,
     }
