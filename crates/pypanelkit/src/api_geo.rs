@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 
 use crate::convert::mat_from_numpy;
 use crate::results::{PyGeoDiagnostics, PyMarketCandidate, PyPowerResult};
+use crate::validate;
 
 fn parse_method(s: &str) -> PyResult<Method> {
     match s.to_lowercase().as_str() {
@@ -38,12 +39,13 @@ pub fn geo_power(
     lookback: Option<usize>,
 ) -> PyResult<PyPowerResult> {
     let m = parse_method(method)?;
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    let min_pre = validate::check_geo_window(test_len, min_pre, t)?;
+    validate::check_lifts(&lifts)?;
+    validate::check_unit_interval("alpha", alpha)?;
+    validate::check_unit_interval("target_power", target_power)?;
     let mat = mat_from_numpy(&y);
-    let min_pre = if min_pre == 0 {
-        test_len.max(2)
-    } else {
-        min_pre
-    };
     let pr = py.allow_threads(move || {
         power_curve(
             &mat,
@@ -110,12 +112,13 @@ pub fn geo_power_ensemble(
             Some([v[0], v[1], v[2]])
         }
     };
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    let min_pre = validate::check_geo_window(test_len, min_pre, t)?;
+    validate::check_lifts(&lifts)?;
+    validate::check_unit_interval("alpha", alpha)?;
+    validate::check_unit_interval("target_power", target_power)?;
     let mat = mat_from_numpy(&y);
-    let min_pre = if min_pre == 0 {
-        test_len.max(2)
-    } else {
-        min_pre
-    };
     let (pr, used) = py.allow_threads(move || {
         power_curve_ensemble(
             &mat,
@@ -154,6 +157,13 @@ pub fn geo_diagnostics(
     treated: Vec<usize>,
     test_len: usize,
 ) -> PyResult<PyGeoDiagnostics> {
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    if test_len == 0 || test_len >= t {
+        return Err(PyValueError::new_err(format!(
+            "test_len must be in [1, {t}) so at least one pre-period remains; got {test_len}"
+        )));
+    }
     let mat = mat_from_numpy(&y);
     let d = diagnostics(&mat, &treated, test_len);
     Ok(PyGeoDiagnostics {
@@ -189,15 +199,52 @@ pub fn geo_select(
     include: Option<Vec<usize>>,
 ) -> PyResult<Vec<PyMarketCandidate>> {
     let m = parse_method(method)?;
-    let mat = mat_from_numpy(&y);
-    let min_pre = if min_pre == 0 {
-        test_len.max(2)
-    } else {
-        min_pre
+    let (n, t) = validate::check_panel(&y)?;
+    let min_pre = validate::check_geo_window(test_len, min_pre, t)?;
+    validate::check_unit_interval("alpha", alpha)?;
+    validate::check_unit_interval("target_power", target_power)?;
+    validate::check_pos("target_lift", target_lift)?;
+    validate::check_min_count("max_treated", max_treated, 1)?;
+    if max_treated >= n {
+        return Err(PyValueError::new_err(format!(
+            "max_treated={max_treated} would allow treating all {n} markets; at least one \
+             market must remain as a control"
+        )));
+    }
+    validate::check_min_count("n_candidates", n_candidates, 1)?;
+    validate::check_indices("eligible", &eligible, n)?;
+    let include = include.unwrap_or_default();
+    validate::check_indices("include", &include, n)?;
+    let n_forced = {
+        let mut f = include.clone();
+        f.sort_unstable();
+        f.dedup();
+        f.len()
     };
+    if let Some(k) = exact_size {
+        validate::check_min_count("exact_size", k, 1)?;
+        if k >= n {
+            return Err(PyValueError::new_err(format!(
+                "exact_size={k} would treat all {n} markets; at least one market must \
+                 remain as a control"
+            )));
+        }
+        if n_forced > k {
+            return Err(PyValueError::new_err(format!(
+                "include forces {n_forced} markets but exact_size={k}; raise exact_size \
+                 or include fewer markets"
+            )));
+        }
+    }
+    if n_forced >= n {
+        return Err(PyValueError::new_err(
+            "include treats every market; need at least one market left as a control",
+        ));
+    }
+    let mat = mat_from_numpy(&y);
     let cfg = SelectConfig {
         eligible,
-        include: include.unwrap_or_default(),
+        include,
         max_treated,
         test_len,
         target_lift,

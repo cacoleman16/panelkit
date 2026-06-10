@@ -102,7 +102,54 @@ def _as_stack(panels) -> np.ndarray:
         raise ValueError(
             f"panel stack must be 3-D (R reps × N units × T periods), got shape {arr.shape}"
         )
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(
+            "panel stack contains NaN or inf; panelkit requires complete, finite panels"
+        )
     return arr
+
+
+def _as_index_list(name, values) -> list:
+    """Coerce unit indices / period markers to ints, rejecting bools and
+    non-integral floats (``treated=[0.9]`` silently truncating to unit 0 is a
+    bug factory)."""
+    out = []
+    for v in values:
+        if isinstance(v, (bool, np.bool_)):
+            raise ValueError(f"{name} must contain integer indices, got a bool ({v!r})")
+        f = float(v)
+        if not f.is_integer():
+            raise ValueError(f"{name} must contain integer indices, got {v!r}")
+        out.append(int(f))
+    return out
+
+
+def _as_period(name, value) -> int:
+    """Coerce a period index to int, rejecting bools and non-integral floats."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be an integer period index, got a bool ({value!r})")
+    f = float(value)
+    if not f.is_integer():
+        raise ValueError(f"{name} must be an integer period index, got {value!r}")
+    return int(f)
+
+
+def _check_inference(inference, supported, cls_name):
+    """Reject unknown inference engines up front — a typo must not silently
+    skip inference."""
+    if inference is not None and inference not in supported:
+        opts = ", ".join(repr(s) for s in supported)
+        raise ValueError(
+            f"{cls_name} does not support inference={inference!r}; "
+            f"choose one of None, {opts}"
+        )
+
+
+def _check_level(level: float) -> float:
+    level = float(level)
+    if not (0.0 < level < 1.0):
+        raise ValueError(f"level must be in (0, 1); got {level}")
+    return level
 
 
 def _attach_bootstrap(result, inference, level, block_len, n_reps, seed):
@@ -170,22 +217,24 @@ class SyntheticControl:
         n_reps: int = 2000,
         seed: int = 0,
     ):
+        _check_inference(inference, ("placebo", "block", "stationary"), "SyntheticControl")
         self.ridge = ridge
         self.inference = inference
-        self.level = level
+        self.level = _check_level(level)
         self.block_len = block_len
         self.n_reps = n_reps
         self.seed = seed
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
-        treated = [int(t) for t in treated]
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
         _validate_block(mat, treated, treat_time)
         do_placebo = self.inference == "placebo"
         raw = _panelkit.fit_sc(
             mat,
             treated,
-            int(treat_time),
+            treat_time,
             self.ridge,
             do_placebo,
             self.level,
@@ -198,10 +247,11 @@ class SyntheticControl:
         """Fit across a stack of panels in parallel (for Monte-Carlo / power /
         robustness runs). ``panels`` is ``(R, N, T)``; returns ``R`` ATTs."""
         stack = _as_stack(panels)
-        _validate_block(np.zeros(stack.shape[1:]), [int(t) for t in treated], treat_time)
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
+        _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
         return np.asarray(
-            _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
-                               "sc", self.ridge, 1.0),
+            _panelkit.fit_many(stack, treated, treat_time, "sc", self.ridge, 1.0),
             dtype=float,
         )
 
@@ -222,20 +272,26 @@ class AugmentedSC:
         n_reps: int = 2000,
         seed: int = 0,
     ):
+        _check_inference(inference, ("block", "stationary"), "AugmentedSC")
+        if aug_lambda is not None and not (float(aug_lambda) > 0.0):
+            raise ValueError(
+                f"aug_lambda must be > 0 (or None for the automatic choice); got {aug_lambda}"
+            )
         self.sc_ridge = sc_ridge
         self.aug_lambda = aug_lambda
         self.inference = inference
-        self.level = level
+        self.level = _check_level(level)
         self.block_len = block_len
         self.n_reps = n_reps
         self.seed = seed
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
-        treated = [int(t) for t in treated]
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
         _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_asc(
-            mat, treated, int(treat_time), self.sc_ridge, self.aug_lambda
+            mat, treated, treat_time, self.sc_ridge, self.aug_lambda
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
@@ -244,10 +300,11 @@ class AugmentedSC:
     def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
         """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
         stack = _as_stack(panels)
-        _validate_block(np.zeros(stack.shape[1:]), [int(t) for t in treated], treat_time)
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
+        _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
         return np.asarray(
-            _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
-                               "asc", self.sc_ridge, 1.0),
+            _panelkit.fit_many(stack, treated, treat_time, "asc", self.sc_ridge, 1.0),
             dtype=float,
         )
 
@@ -269,20 +326,20 @@ class SyntheticDiD:
         n_reps: int = 2000,
         seed: int = 0,
     ):
+        _check_inference(inference, ("block", "stationary"), "SyntheticDiD")
         self.zeta_scale = zeta_scale
         self.inference = inference
-        self.level = level
+        self.level = _check_level(level)
         self.block_len = block_len
         self.n_reps = n_reps
         self.seed = seed
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
-        treated = [int(t) for t in treated]
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
         _validate_block(mat, treated, treat_time)
-        raw = _panelkit.fit_sdid(
-            mat, treated, int(treat_time), self.zeta_scale
-        )
+        raw = _panelkit.fit_sdid(mat, treated, treat_time, self.zeta_scale)
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
         )
@@ -290,10 +347,11 @@ class SyntheticDiD:
     def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
         """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
         stack = _as_stack(panels)
-        _validate_block(np.zeros(stack.shape[1:]), [int(t) for t in treated], treat_time)
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
+        _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
         return np.asarray(
-            _panelkit.fit_many(stack, [int(t) for t in treated], int(treat_time),
-                               "sdid", 0.0, self.zeta_scale),
+            _panelkit.fit_many(stack, treated, treat_time, "sdid", 0.0, self.zeta_scale),
             dtype=float,
         )
 
@@ -318,6 +376,10 @@ class MCNNM:
         seed: int = 0,
         max_rank: int | None = None,
     ):
+        if lambda_ is not None and not (float(lambda_) > 0.0):
+            raise ValueError(
+                f"lambda_ must be > 0 (or None for cross-validation); got {lambda_}"
+            )
         self.lambda_ = lambda_
         self.max_iter = max_iter
         self.tol = tol
@@ -326,12 +388,13 @@ class MCNNM:
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
         mat = _as_matrix(y)
-        treated = [int(t) for t in treated]
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
         _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_mcnnm(
             mat,
             treated,
-            int(treat_time),
+            treat_time,
             self.lambda_,
             int(self.max_iter),
             float(self.tol),
@@ -413,6 +476,14 @@ class CPASC:
         sc_ridge: float = 0.0,
         aug_lambda: float | None = None,
     ):
+        if mode not in ("mspe", "stratified", "cumulative"):
+            raise ValueError(
+                f"unknown CPASC mode {mode!r}; choose 'mspe', 'stratified', or 'cumulative'"
+            )
+        if aug_lambda is not None and not (float(aug_lambda) > 0.0):
+            raise ValueError(
+                f"aug_lambda must be > 0 (or None for the automatic choice); got {aug_lambda}"
+            )
         self.mode = mode
         self.n_strata = n_strata
         self.block_len = block_len
@@ -421,12 +492,13 @@ class CPASC:
 
     def fit(self, y, treated: Sequence[int], treat_time: int) -> _CPASCResult:
         mat = _as_matrix(y)
-        treated = [int(t) for t in treated]
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
         _validate_block(mat, treated, treat_time)
         raw = _panelkit.fit_cpasc(
             mat,
             treated,
-            int(treat_time),
+            treat_time,
             self.mode,
             int(self.n_strata),
             self.block_len,
@@ -475,13 +547,23 @@ class _DiDResult:
 
 
 def _cohorts(treat_start, n) -> list:
-    """Normalize a per-unit treatment-start spec to int cohorts (<0 = never)."""
+    """Normalize a per-unit treatment-start spec to int cohorts (<0 = never).
+
+    A cohort at or beyond the last period means the unit is never treated
+    *within the sample*; the core normalizes it to never-treated (the R ``did``
+    package convention). Bools and non-integral floats are rejected.
+    """
     out = []
     for c in treat_start:
         if c is None or (isinstance(c, float) and np.isnan(c)):
             out.append(-1)
+        elif isinstance(c, (bool, np.bool_)):
+            raise ValueError(f"treat_start must contain integer periods, got a bool ({c!r})")
         else:
-            out.append(int(c))
+            f = float(c)
+            if not f.is_integer():
+                raise ValueError(f"treat_start must contain integer periods, got {c!r}")
+            out.append(int(f))
     if len(out) != n:
         raise ValueError(f"treat_start length {len(out)} != n_units {n}")
     return out
@@ -511,6 +593,10 @@ class CallawaySantAnna:
     """
 
     def __init__(self, control_group: str = "never"):
+        if control_group not in ("never", "notyet", "not_yet_treated"):
+            raise ValueError(
+                f"control_group must be 'never' or 'notyet'; got {control_group!r}"
+            )
         self.control_group = control_group
 
     def fit(self, y, treat_start: Sequence, covariates=None) -> _DiDResult:
