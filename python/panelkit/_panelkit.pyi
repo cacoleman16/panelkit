@@ -81,12 +81,16 @@ def fit_asc(
     treat_time: int,
     sc_ridge: float = ...,
     aug_lambda: Optional[float] = ...,
+    placebo: bool = ...,
+    level: float = ...,
 ) -> SCResult: ...
 def fit_sdid(
     y: npt.NDArray[np.float64],
     treated: Sequence[int],
     treat_time: int,
     zeta_scale: float = ...,
+    inference: str = ...,
+    level: float = ...,
 ) -> SCResult: ...
 def fit_mcnnm(
     y: npt.NDArray[np.float64],
