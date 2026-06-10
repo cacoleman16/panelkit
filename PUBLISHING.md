@@ -52,5 +52,3 @@ twine upload dist/*        # prompts for token, or use ~/.pypirc / TWINE_* env
   dev box produces a non-portable linux tag.
 - **abi3**: we build against the stable ABI (`abi3-py39`), so a single wheel per
   platform serves all Python ≥ 3.9 — no per-minor-version matrix needed.
-- The `panelkit/panelkit` GitHub URLs in metadata are placeholders; set them to
-  the real repository before release.
