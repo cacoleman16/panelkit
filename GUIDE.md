@@ -27,8 +27,11 @@ weights; the donor pool plausibly spans the treated unit.
 
 **Inference.** In-space **placebo / permutation** (`inference="placebo"`):
 reassign treatment to each donor, refit, and rank the treated unit's post/pre
-RMSPE ratio against the placebo distribution. Valid for small numbers of treated
-units. Watch `pre_rmspe` — a poor pre-fit invalidates the comparison.
+RMSPE ratio against the placebo distribution (→ `p_value`). The same placebo
+refits also yield an ATT-scale null — each donor's mean post-period gap
+(`placebo_atts`, outcome units) — which is what `se` and `ci` are built from.
+Valid for small numbers of treated units. Watch `pre_rmspe` — a poor pre-fit
+invalidates the comparison.
 
 ---
 

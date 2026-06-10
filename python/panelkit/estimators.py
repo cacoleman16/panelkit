@@ -64,18 +64,35 @@ class _Result:
 
     @property
     def se(self):
+        """ATT-scale standard error (outcome units), when inference ran.
+
+        Placebo inference: the spread of the placebo ATTs (each donor refit as
+        pseudo-treated). Bootstrap inference: the bootstrap SE of the mean
+        post-period gap.
+        """
         # Bootstrap-derived SE overrides the placebo-derived one when present.
         return self._boot_se if self._boot_se is not None else self._raw.se
 
     @property
     def ci(self):
-        """(lower, upper) confidence interval, when an inference engine ran."""
-        return self._boot_ci
+        """(lower, upper) ATT confidence interval, when an inference engine ran."""
+        if self._boot_ci is not None:
+            return self._boot_ci
+        if self._raw.ci_lower is not None:
+            return (self._raw.ci_lower, self._raw.ci_upper)
+        return None
 
     @property
     def inference_distribution(self):
+        """Null distribution of the placebo test statistic (RMSPE ratios)."""
         dist = self._raw.inference_distribution
         return None if dist is None else np.asarray(dist, dtype=float)
+
+    @property
+    def placebo_atts(self):
+        """Placebo ATTs in outcome units (the ATT-scale null behind se/ci)."""
+        atts = getattr(self._raw, "placebo_atts", None)
+        return None if atts is None else np.asarray(atts, dtype=float)
 
     def summary(self) -> str:
         lines = [
@@ -87,7 +104,7 @@ class _Result:
         if self.p_value is not None:
             lines.append(f"placebo p-value: {self.p_value:.4g}")
         if self.se is not None:
-            lines.append(f"SE             : {self.se:.6g}")
+            lines.append(f"SE (ATT units) : {self.se:.6g}")
         if self.ci is not None:
             lines.append(f"{int(100*self._level)}% CI         : [{self.ci[0]:.6g}, {self.ci[1]:.6g}]")
         return "\n".join(lines)
