@@ -224,11 +224,9 @@ fn covariate_adjustment_reduces_confounding_bias() {
     let xmat = Mat::from_col_vec(&x); // N×1 covariate
     let panel = Panel::new(y, starts).with_covariates(xmat);
 
-    let simple = fit_callaway_with(&panel, ControlGroup::NeverTreated).overall_att;
-    // covariate-adjusted: covariates are attached, so fit uses regression adjustment
+    // Covariates are attached, so this fit uses regression adjustment; the
+    // simple comparison comes from a covariate-free copy below.
     let adjusted = fit_callaway_with(&panel, ControlGroup::NeverTreated).overall_att;
-    // NOTE: fit_callaway_with auto-uses covariates when present, so to compare we
-    // fit the simple version on a covariate-free copy.
     let panel_nocov = {
         let mut yy = Mat::zeros(n, t);
         for i in 0..n {
@@ -244,7 +242,6 @@ fn covariate_adjustment_reduces_confounding_bias() {
     };
     let simple_nocov = fit_callaway_with(&panel_nocov, ControlGroup::NeverTreated).overall_att;
 
-    let _ = simple;
     let err_adj = (adjusted - true_eff).abs();
     let err_simple = (simple_nocov - true_eff).abs();
     assert!(
@@ -291,4 +288,169 @@ fn bacon_flags_forbidden_comparison_weight() {
         .components
         .iter()
         .any(|c| c.kind == BaconKind::LaterVsEarlierForbidden));
+}
+
+// ---------------------------------------------------------------------------
+// Audit regressions: always-treated contamination (SA), estimated-weight and
+// estimated-β terms in the C&S influence functions.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sunab_excludes_always_treated_units() {
+    // Always-treated units (cohort 0) have no reference period; leaving them
+    // in pooled them into the never-treated reference and contaminated every
+    // event-study coefficient (spurious pre-trends, biased dynamics).
+    let (n, t) = (10usize, 12usize);
+    let mut y = Mat::zeros(n, t);
+    let mut starts: Vec<Option<usize>> = vec![None; n];
+    for p in 0..t {
+        // 4 never-treated: flat baselines.
+        for i in 0..4 {
+            y.set(i, p, 1.0 + i as f64);
+        }
+        // 3 always-treated (cohort 0) with a strongly trending treated path.
+        for i in 4..7 {
+            y.set(i, p, 5.0 + 0.5 * p as f64);
+            starts[i] = Some(0);
+        }
+        // 3 treated at g = 6 with constant effect tau = 2.
+        for i in 7..10 {
+            let eff = if p >= 6 { 2.0 } else { 0.0 };
+            y.set(i, p, 2.0 + (i as f64) * 0.1 + eff);
+            starts[i] = Some(6);
+        }
+    }
+    let full = Panel::new(y.clone(), starts.clone());
+
+    // Reference: the same panel with the always-treated rows dropped by hand.
+    let keep: Vec<usize> = (0..n).filter(|&i| starts[i] != Some(0)).collect();
+    let mut y2 = Mat::zeros(keep.len(), t);
+    let mut starts2 = Vec::new();
+    for (r, &u) in keep.iter().enumerate() {
+        for p in 0..t {
+            y2.set(r, p, y.get(u, p));
+        }
+        starts2.push(starts[u]);
+    }
+    let dropped = Panel::new(y2, starts2);
+
+    let sa_full = fit_sunab(&full);
+    let sa_drop = fit_sunab(&dropped);
+    assert!(
+        (sa_full.overall_att - sa_drop.overall_att).abs() < 1e-10,
+        "always-treated units leaked into the SA fit: {} vs {}",
+        sa_full.overall_att,
+        sa_drop.overall_att
+    );
+    // And on this noiseless design the truth is exactly 2.
+    assert!(
+        (sa_full.overall_att - 2.0).abs() < 1e-8,
+        "SA overall {} != 2.0",
+        sa_full.overall_att
+    );
+    for e in &sa_full.event_study {
+        let want = if e.key >= 0 { 2.0 } else { 0.0 };
+        assert!(
+            (e.att - want).abs() < 1e-8,
+            "SA event e={} att {} != {}",
+            e.key,
+            e.att,
+            want
+        );
+    }
+}
+
+#[test]
+fn cs_overall_ci_covers_under_random_cohorts_and_heterogeneous_effects() {
+    // C&S's sampling framework treats cohort membership as random, so the
+    // aggregation weights n_g/Σn_g are ESTIMATED and the aggregate IF needs
+    // the weight-estimation (wif) term. Without it the overall SE was ~25%
+    // understated on this DGP (95% CI coverage ~0.86). Seeded → deterministic.
+    let n_rep = 400usize;
+    let (n, t) = (120usize, 12usize);
+    // Population estimand: cells (g=3: 9 post periods, tau=1), (g=6: 6, tau=4),
+    // cohort probabilities .3/.3 → theta = (.3*9*1 + .3*6*4)/(.3*9 + .3*6).
+    let theta = (0.3 * 9.0 * 1.0 + 0.3 * 6.0 * 4.0) / (0.3 * 9.0 + 0.3 * 6.0);
+    let mut covered = 0usize;
+    for rep in 0..n_rep {
+        let mut rng = Xoshiro256pp::seed_from_u64(40_000 + rep as u64);
+        let mut y = Mat::zeros(n, t);
+        let mut starts: Vec<Option<usize>> = vec![None; n];
+        for i in 0..n {
+            let u = rng.next_f64();
+            let (g, tau) = if u < 0.3 {
+                (Some(3usize), 1.0)
+            } else if u < 0.6 {
+                (Some(6usize), 4.0)
+            } else {
+                (None, 0.0)
+            };
+            starts[i] = g;
+            for p in 0..t {
+                let eff = match g {
+                    Some(gg) if p >= gg => tau,
+                    _ => 0.0,
+                };
+                y.set(i, p, eff + rng.next_normal());
+            }
+        }
+        let panel = Panel::new(y, starts);
+        let cs = fit_callaway(&panel);
+        if (cs.overall_att - theta).abs() <= 1.96 * cs.overall_se {
+            covered += 1;
+        }
+    }
+    let coverage = covered as f64 / n_rep as f64;
+    assert!(
+        coverage >= 0.91,
+        "overall-ATT CI under-covers with estimated weights: {coverage} (want ~0.95)"
+    );
+}
+
+#[test]
+fn cs_covariate_ci_covers_with_estimated_beta() {
+    // The covariate-adjusted IF must include the first-step OLS term
+    // -(X̄_g - X̄_c)' ψ_β; without it the SEs were ~35% understated on a
+    // confounded DGP (coverage ~0.82). Seeded → deterministic.
+    let n_rep = 300usize;
+    let (n, t, g0) = (100usize, 10usize, 4usize);
+    let tau = 1.0;
+    let mut covered = 0usize;
+    for rep in 0..n_rep {
+        let mut rng = Xoshiro256pp::seed_from_u64(70_000 + rep as u64);
+        let mut y = Mat::zeros(n, t);
+        let mut xv = vec![0.0; n];
+        let mut starts: Vec<Option<usize>> = vec![None; n];
+        for i in 0..n {
+            let x = rng.next_normal();
+            xv[i] = x;
+            // Confounded adoption: high-x units more likely treated.
+            if x + 0.5 * rng.next_normal() > 0.8 {
+                starts[i] = Some(g0);
+            }
+            for p in 0..t {
+                let eff = match starts[i] {
+                    Some(gg) if p >= gg => tau,
+                    _ => 0.0,
+                };
+                // x drives a differential TREND (what the adjustment removes).
+                y.set(i, p, 0.4 * x * p as f64 + eff + rng.next_normal());
+            }
+        }
+        // Reps where (almost) nobody adopts are not estimable — skip rare ones.
+        if starts.iter().filter(|s| s.is_some()).count() < 5 {
+            continue;
+        }
+        let xmat = Mat::from_col_vec(&xv);
+        let panel = Panel::new(y, starts).with_covariates(xmat);
+        let cs = fit_callaway(&panel);
+        if (cs.overall_att - tau).abs() <= 1.96 * cs.overall_se {
+            covered += 1;
+        }
+    }
+    let coverage = covered as f64 / n_rep as f64;
+    assert!(
+        coverage >= 0.90,
+        "covariate-adjusted CI under-covers: {coverage} (want ~0.95)"
+    );
 }

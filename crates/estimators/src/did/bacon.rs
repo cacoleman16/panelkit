@@ -17,8 +17,12 @@
 //! weight resting on forbidden comparisons. As a built-in check,
 //! `Σ weight · estimate` reproduces the TWFE coefficient.
 //!
-//! Assumes a balanced panel, sharp timing, and a never-treated group. Units
-//! treated from period 0 (no pre-period) are excluded from the decomposition.
+//! Assumes a balanced panel and sharp timing. Units treated from period 0 (no
+//! pre-period) are excluded from the decomposition entirely — in that case
+//! `Σ weight·estimate` equals the TWFE coefficient on the *decomposition
+//! sample* (always-treated units dropped), **not** on the full panel; the
+//! Python layer rejects such panels with an actionable error instead of
+//! returning a silently inconsistent pair.
 
 use crate::panel::Panel;
 

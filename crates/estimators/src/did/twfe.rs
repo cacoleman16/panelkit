@@ -22,7 +22,7 @@ pub struct TwfeFit {
     pub att: f64,
     /// Cluster-robust (by unit) standard error.
     pub se: f64,
-    /// Residual degrees of freedom used in the SE.
+    /// Number of clusters (= units) behind the CR SE.
     pub n_clusters: usize,
 }
 
