@@ -8,9 +8,19 @@ Two synthetic panels are used:
     treated geos genuinely changes the answer).
 """
 
+import os
+
 import numpy as np
 
 from panelkit.design import GeoDesign
+
+# Figures land next to the repo's assets/ regardless of the working directory.
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
+os.makedirs(ASSETS, exist_ok=True)
+
+
+def asset(name: str) -> str:
+    return os.path.join(ASSETS, name)
 
 
 def clean_panel(n=40, t=78, seed=3):
@@ -57,13 +67,13 @@ treated = best["markets"]
 
 rep = design.power(treated=treated, test_len=8)
 print(rep.summary())
-rep.plot("assets/geo_design.png")
-print("\nwrote assets/geo_design.png")
+rep.plot(asset("geo_design.png"))
+print("\nwrote", asset("geo_design.png"))
 
 guard = design.diagnose(treated=treated, test_len=8)
 print("\n" + guard.summary())
-guard.plot("assets/geo_guardrails.png")
-print("wrote assets/geo_guardrails.png")
+guard.plot(asset("geo_guardrails.png"))
+print("wrote", asset("geo_guardrails.png"))
 
 # ===========================================================================
 # 2) Market selection (clean panel).
@@ -89,8 +99,8 @@ grid = heterogeneous_panel().recommend(
     n_candidates=30,
 )
 print(grid.summary())
-grid.plot("assets/geo_scenarios.png")
-print("\nwrote assets/geo_scenarios.png")
+grid.plot(asset("geo_scenarios.png"))
+print("\nwrote", asset("geo_scenarios.png"))
 
 # ===========================================================================
 # 4) Multi-cell test: several disjoint treatment cells at once.
@@ -110,8 +120,8 @@ mc = design.multi_cell(
     alpha=0.10,
 )
 print(mc.summary())
-mc.plot("assets/geo_multicell.png")
-print("\nwrote assets/geo_multicell.png")
+mc.plot(asset("geo_multicell.png"))
+print("\nwrote", asset("geo_multicell.png"))
 
 # ===========================================================================
 # 5) Evaluate a test that already ran (post-test measurement).
@@ -131,10 +141,10 @@ post = GeoDesign(Y_test, names=design.names)
 ev = post.evaluate(treated=treated, treat_start=t_start, level=0.90)
 print("\n" + ev.summary())
 print(f"\n(ground truth was +6.0%; ensemble recovered {100*ev.lift:+.2f}%)")
-ev.plot("assets/geo_evaluate.png")
-print("wrote assets/geo_evaluate.png")
-ev.plot_effect_over_time("assets/geo_effect_over_time.png")
-print("wrote assets/geo_effect_over_time.png")
+ev.plot(asset("geo_evaluate.png"))
+print("wrote", asset("geo_evaluate.png"))
+ev.plot_effect_over_time(asset("geo_effect_over_time.png"))
+print("wrote", asset("geo_effect_over_time.png"))
 
 # Pin in must-have markets and drop ones you don't trust as controls:
 forced = treated[:1]
