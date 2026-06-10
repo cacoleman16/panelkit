@@ -1,26 +1,62 @@
-//! Placebo / permutation inference for synthetic control (Abadie et al. 2010).
+//! Placebo / permutation inference for the synthetic-control family
+//! (Abadie et al. 2010).
 //!
 //! In-space placebo: reassign treatment, in turn, to each never-treated donor
-//! (using the remaining donors as its pool), refit, and record the post/pre
-//! RMSPE ratio. The treated unit's ratio is then compared against this placebo
+//! (using the remaining donors as its pool), refit **the same estimator** the
+//! point estimate used (SC, ASC, or SDID), and record the post/pre RMSPE
+//! ratio. The treated unit's ratio is then compared against this placebo
 //! distribution; the one-sided p-value is the share of placebo ratios at least
-//! as extreme.
+//! as extreme. The placebo ATTs (outcome units) double as the null
+//! distribution for an ATT-scale SE / CI.
 
-use panelkit_estimators::sc::synthetic::{fit_at, fit_series, ScConfig};
-use panelkit_estimators::Panel;
+use panelkit_estimators::sc::augmented::AscConfig;
+use panelkit_estimators::sc::sdid::SdidConfig;
+use panelkit_estimators::sc::synthetic::ScConfig;
+use panelkit_estimators::sc::{fit_asc_at, fit_at as fit_sc_at, fit_sdid_at};
+use panelkit_estimators::{Panel, ScFit};
 use panelkit_linalg::Mat;
 
-/// Outcome of an SC placebo test.
+/// Which SC-family estimator the placebo engine refits per donor.
+#[derive(Clone, Copy, Debug)]
+pub enum ScMethod {
+    Sc(ScConfig),
+    Asc(AscConfig),
+    Sdid(SdidConfig),
+}
+
+impl ScMethod {
+    fn fit_at(&self, panel: &Panel, t0: usize) -> ScFit {
+        match *self {
+            ScMethod::Sc(cfg) => fit_sc_at(panel, t0, cfg),
+            ScMethod::Asc(cfg) => fit_asc_at(panel, t0, cfg),
+            ScMethod::Sdid(cfg) => fit_sdid_at(panel, t0, cfg),
+        }
+    }
+
+    /// The placebo test statistic for a fit. SC/ASC use Abadie's post/pre
+    /// RMSPE ratio. SDID uses |ATT|: its `post_rmspe` measures dispersion of
+    /// the gap path *around its mean*, so a constant treatment effect leaves
+    /// the ratio completely unchanged — the ratio statistic has no power
+    /// against exactly the alternative being tested.
+    fn statistic(&self, fit: &ScFit) -> f64 {
+        match self {
+            ScMethod::Sdid(_) => fit.att.abs(),
+            _ => fit.rmspe_ratio(),
+        }
+    }
+}
+
+/// Outcome of an SC-family placebo test.
 #[derive(Clone, Debug)]
 pub struct PlaceboResult {
     /// Estimated ATT for the real treated unit(s).
     pub att: f64,
     /// Per-post-period ATT path.
     pub att_path: Vec<f64>,
-    /// Treated unit's post/pre RMSPE ratio (the test statistic).
+    /// Treated unit's test statistic (post/pre RMSPE ratio for SC/ASC;
+    /// |ATT| for SDID — see [`ScMethod`]).
     pub treated_ratio: f64,
-    /// Placebo RMSPE ratios, one per donor (dimensionless test statistics —
-    /// these drive the p-value).
+    /// Placebo test statistics, one per donor — these drive the p-value.
     pub placebo_ratios: Vec<f64>,
     /// Placebo ATTs (mean post-period gap per placebo fit), in **outcome
     /// units**, aligned with `placebo_ratios`. Under no effect these are null
@@ -31,55 +67,52 @@ pub struct PlaceboResult {
     pub p_value: f64,
 }
 
-/// Build the pre/post donor blocks for an explicit list of donor units.
-fn donor_blocks(panel: &Panel, donors: &[usize], t0: usize) -> (Mat, Mat) {
+/// Build the donor-only sub-panel where donor `d` plays "treated" (row 0) and
+/// the remaining donors are its pool. Excluding the actual treated unit(s)
+/// keeps the real effect from leaking into the placebo null.
+fn placebo_panel(panel: &Panel, donors: &[usize], idx: usize, t0: usize) -> Panel {
     let t = panel.n_periods();
-    let mut pre = Mat::zeros(t0, donors.len());
-    let mut post = Mat::zeros(t - t0, donors.len());
-    for (jc, &u) in donors.iter().enumerate() {
-        for p in 0..t0 {
-            pre.set(p, jc, panel.outcome(u, p));
-        }
-        for p in t0..t {
-            post.set(p - t0, jc, panel.outcome(u, p));
+    let mut rows: Vec<usize> = Vec::with_capacity(donors.len());
+    rows.push(donors[idx]);
+    rows.extend(
+        donors
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != idx)
+            .map(|(_, &u)| u),
+    );
+    let mut y = Mat::zeros(rows.len(), t);
+    for (r, &u) in rows.iter().enumerate() {
+        for p in 0..t {
+            y.set(r, p, panel.outcome(u, p));
         }
     }
-    (pre, post)
+    Panel::block(y, &[0], t0)
 }
 
-/// Run the SC in-space placebo test.
-pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
+/// Run the in-space placebo test, refitting `method` per donor.
+pub fn sc_placebo_method(panel: &Panel, method: ScMethod) -> PlaceboResult {
     let t0 = panel
         .common_treat_time()
         .expect("placebo test requires a single common treatment time");
 
     // Real treated fit.
-    let treated_fit = fit_at(panel, t0, cfg);
-    let treated_ratio = treated_fit.rmspe_ratio();
+    let treated_fit = method.fit_at(panel, t0);
+    let treated_ratio = method.statistic(&treated_fit);
 
     let donors = panel.never_treated_units();
-    let t = panel.n_periods();
 
     // Each donor's placebo fit is independent of the others, so we farm them out
     // in parallel (when the `parallel` feature is on); the per-donor result does
     // not depend on ordering, so the output is deterministic regardless.
     let work: Vec<usize> = (0..donors.len()).collect();
     let placebo_fits: Vec<(f64, f64)> = crate::parallel::par_map_items(work, |idx| {
-        let d = donors[idx];
-        let pool: Vec<usize> = donors
-            .iter()
-            .enumerate()
-            .filter(|&(j, _)| j != idx)
-            .map(|(_, &u)| u)
-            .collect();
-        if pool.is_empty() {
+        if donors.len() < 2 {
             return (f64::NAN, f64::NAN);
         }
-        let (pre, post) = donor_blocks(panel, &pool, t0);
-        let y_pre: Vec<f64> = (0..t0).map(|p| panel.outcome(d, p)).collect();
-        let y_post: Vec<f64> = (t0..t).map(|p| panel.outcome(d, p)).collect();
-        let fit = fit_series(&y_pre, &y_post, &pre, &post, pool, cfg.ridge);
-        (fit.rmspe_ratio(), fit.att)
+        let sub = placebo_panel(panel, &donors, idx, t0);
+        let fit = method.fit_at(&sub, t0);
+        (method.statistic(&fit), fit.att)
     })
     .into_iter()
     .filter(|(r, _)| !r.is_nan())
@@ -104,4 +137,9 @@ pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
         placebo_atts,
         p_value,
     }
+}
+
+/// Run the SC in-space placebo test (back-compat wrapper).
+pub fn sc_placebo(panel: &Panel, cfg: ScConfig) -> PlaceboResult {
+    sc_placebo_method(panel, ScMethod::Sc(cfg))
 }

@@ -62,8 +62,12 @@ violations of either pure-SC or pure-DiD assumptions than either alone.
 
 **Use when.** The general-purpose default for a block-treatment geo test.
 
-**Inference.** **Jackknife** (leave-one-unit-out) when there are ≥ 2 treated
-units; otherwise placebo.
+**Inference.** ``inference="jackknife"`` — the fixed-weights leave-one-unit-out
+jackknife of Arkhangelsky et al. / `synthdid` (needs ≥ 2 treated units) —
+or ``inference="placebo"`` (in-space placebo refitting SDID per donor; works
+with a single treated unit; the test statistic is |ATT|, since SDID's RMSPE
+ratio is invariant to a constant effect). Block/stationary bootstraps of the
+gap path are also available.
 
 ---
 

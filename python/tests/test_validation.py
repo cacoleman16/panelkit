@@ -182,7 +182,7 @@ def test_unknown_inference_rejected():
     with pytest.raises(ValueError, match="inference"):
         SyntheticControl(inference="placbo")  # typo must not silently no-op
     with pytest.raises(ValueError, match="inference"):
-        AugmentedSC(inference="placebo")  # not supported (yet) → loud, not silent
+        AugmentedSC(inference="placbo")
     with pytest.raises(ValueError, match="inference"):
         SyntheticDiD(inference="bootstrap")
 

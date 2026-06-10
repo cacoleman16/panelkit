@@ -11,5 +11,8 @@ pub use augmented::{
 pub use cpasc::{
     fit as fit_cpasc, fit_at as fit_cpasc_at, CpascConfig, CpascFit, PoolMode, UnitFit,
 };
-pub use sdid::{fit as fit_sdid, fit_at as fit_sdid_at, SdidConfig};
+pub use sdid::{
+    fit as fit_sdid, fit_at as fit_sdid_at, jackknife_loo_atts as sdid_jackknife_loo_atts,
+    SdidConfig,
+};
 pub use synthetic::{fit as fit_sc, fit_at, fit_series, ScConfig};
