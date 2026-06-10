@@ -33,6 +33,7 @@ fn result_from_fit(fit: &ScFit) -> PyScResult {
         ci_lower: None,
         ci_upper: None,
         inference_distribution: None,
+        placebo_atts: None,
     }
 }
 
@@ -73,8 +74,16 @@ pub fn fit_sc(
         if !pb.placebo_ratios.is_empty() {
             result.p_value = Some(pb.p_value);
             result.inference_distribution = Some(pb.placebo_ratios.clone());
-            let ci = percentile_ci(pb.treated_ratio, &pb.placebo_ratios, level);
-            result.se = Some(ci.se);
+            // ATT-scale uncertainty comes from the placebo *ATTs* (mean
+            // post-period gap of each donor refit as pseudo-treated): under no
+            // effect those are null draws of the ATT estimator, in outcome
+            // units. The RMSPE ratios are dimensionless test statistics — the
+            // right input for the p-value, the wrong one for an SE/CI.
+            let null_ci = percentile_ci(0.0, &pb.placebo_atts, level);
+            result.se = Some(null_ci.se);
+            result.ci_lower = Some(fit.att + null_ci.lower);
+            result.ci_upper = Some(fit.att + null_ci.upper);
+            result.placebo_atts = Some(pb.placebo_atts.clone());
         }
     }
 

@@ -26,7 +26,9 @@ impl SplitMix64 {
     }
 }
 
-/// Xoshiro256++ — fast, high-quality, with a `jump` for stream separation.
+/// Xoshiro256++ — fast and high-quality. Stream separation is done by
+/// [`Xoshiro256pp::substream`] (SplitMix64 re-seeding keyed on the substream
+/// index), not by the xoshiro `jump()` polynomial.
 #[derive(Clone)]
 pub struct Xoshiro256pp {
     s: [u64; 4],
@@ -81,7 +83,9 @@ impl Xoshiro256pp {
     /// Uniform integer in `[0, n)` via Lemire's rejection-free multiply-shift
     /// (with a small rejection step for exact uniformity).
     pub fn gen_range(&mut self, n: usize) -> usize {
-        debug_assert!(n > 0);
+        // Hard assert: in release `gen_range(0)` would otherwise silently
+        // return 0 — an element of an empty range.
+        assert!(n > 0, "gen_range(0): empty range");
         let n = n as u64;
         let mut x = self.next_u64();
         let mut m = (x as u128) * (n as u128);

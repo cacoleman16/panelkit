@@ -41,24 +41,25 @@ impl Householder {
                 alpha: x0,
             };
         }
-        let xnorm = (x0 * x0 + sigma * sigma).sqrt();
+        // hypot scales internally, so the norm neither overflows (‖x‖ ≳ 1e154
+        // would overflow the naive square) nor flushes to zero (‖x‖ ≲ 1e-160).
+        let xnorm = x0.hypot(sigma);
         // alpha = -sign(x0) * ||x||
         let alpha = if x0 <= 0.0 { xnorm } else { -xnorm };
+        // v0 = x0 - alpha is nonzero here: the only zero case (sigma == 0 with
+        // x0 >= 0) returned early above. The tail entries are O(1) after the
+        // 1/v0 normalization, so beta = 2/vᵀv is scale-free.
         let v0 = x0 - alpha;
-        // beta = 2 / (vᵀ v); normalize so v[0] = 1.
-        let vnorm_sq = v0 * v0 + sigma * sigma;
-        let beta = 2.0 * v0 * v0 / vnorm_sq;
         let inv_v0 = 1.0 / v0;
         v[0] = 1.0;
         for vi in v.iter_mut().skip(1) {
             *vi *= inv_v0;
         }
-        // With v[0] normalized to 1, recompute beta = 2 / (vᵀv).
         let mut vtv = 1.0;
         for &vi in v.iter().skip(1) {
             vtv += vi * vi;
         }
-        let beta = if beta == 0.0 { 0.0 } else { 2.0 / vtv };
+        let beta = 2.0 / vtv;
         Householder { v, beta, alpha }
     }
 
