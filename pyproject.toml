@@ -12,8 +12,17 @@ license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "panelkit contributors" }]
 keywords = ["causal-inference", "synthetic-control", "difference-in-differences", "econometrics", "panel-data"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering",
     "Intended Audience :: Science/Research",
 ]
