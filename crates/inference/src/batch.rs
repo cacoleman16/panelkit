@@ -8,7 +8,8 @@
 
 use crate::parallel::par_map_items;
 use panelkit_estimators::sc::{
-    fit_asc_at, fit_at as sc_fit_at, fit_sdid_at, AscConfig, ScConfig, SdidConfig,
+    fit_asc_at, fit_at as sc_fit_at, fit_fp_at, fit_rsc_at, fit_sdid_at, AscConfig, FpConfig,
+    RscConfig, ScConfig, SdidConfig,
 };
 use panelkit_estimators::Panel;
 
@@ -26,4 +27,14 @@ pub fn asc_att_many(panels: Vec<Panel>, t0: usize, cfg: AscConfig) -> Vec<f64> {
 /// Fit SDID across many panels in parallel; returns one ATT per panel.
 pub fn sdid_att_many(panels: Vec<Panel>, t0: usize, cfg: SdidConfig) -> Vec<f64> {
     par_map_items(panels, move |p| fit_sdid_at(&p, t0, cfg).att)
+}
+
+/// Fit the demeaned (Ferman-Pinto) SC across many panels in parallel.
+pub fn fp_att_many(panels: Vec<Panel>, t0: usize, cfg: FpConfig) -> Vec<f64> {
+    par_map_items(panels, move |p| fit_fp_at(&p, t0, cfg).att)
+}
+
+/// Fit robust (spectrally de-noised) SC across many panels in parallel.
+pub fn rsc_att_many(panels: Vec<Panel>, t0: usize, cfg: RscConfig) -> Vec<f64> {
+    par_map_items(panels, move |p| fit_rsc_at(&p, t0, cfg).att)
 }

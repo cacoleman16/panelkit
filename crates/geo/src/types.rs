@@ -1,5 +1,7 @@
 //! Shared types for geo-experiment design.
 
+use panelkit_linalg::opt::simplex::WeightBounds;
+
 /// Which estimator to power/evaluate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -9,10 +11,24 @@ pub enum Method {
     Asc,
     /// Synthetic Difference-in-Differences.
     Sdid,
-    /// Weighted average of SC + ASC + SDID (a model-averaging ensemble). Not a
-    /// single fit — produced only by the ensemble power/evaluate paths.
+    /// Demeaned Synthetic Control (Ferman & Pinto 2021).
+    Fp,
+    /// Robust / spectrally de-noised Synthetic Control.
+    Rsc,
+    /// Weighted average of several base methods (a model-averaging ensemble).
+    /// Not a single fit — produced only by the ensemble power/evaluate paths.
     Ensemble,
 }
+
+/// The base (single-fit) methods, in canonical order. `Ensemble` is excluded:
+/// it is a combination of these, not one of them.
+pub const BASE_METHODS: [Method; 5] = [
+    Method::Sc,
+    Method::Asc,
+    Method::Sdid,
+    Method::Fp,
+    Method::Rsc,
+];
 
 impl Method {
     pub fn name(&self) -> &'static str {
@@ -20,9 +36,39 @@ impl Method {
             Method::Sc => "SC",
             Method::Asc => "ASC",
             Method::Sdid => "SDID",
+            Method::Fp => "FP",
+            Method::Rsc => "RSC",
             Method::Ensemble => "ENSEMBLE",
         }
     }
+
+    /// Parse a method name (case-insensitive). `None` for anything unknown —
+    /// including "ensemble", which is not a single fit.
+    pub fn from_name(s: &str) -> Option<Method> {
+        match s.to_ascii_lowercase().as_str() {
+            "sc" => Some(Method::Sc),
+            "asc" => Some(Method::Asc),
+            "sdid" => Some(Method::Sdid),
+            "fp" | "dsc" => Some(Method::Fp),
+            "rsc" => Some(Method::Rsc),
+            _ => None,
+        }
+    }
+
+    /// Whether per-donor weight bounds are meaningful for this estimator.
+    /// [`Method::Rsc`] regresses on de-noised factors rather than solving a
+    /// simplex problem, so it has no bounded weights to constrain.
+    pub fn honours_weight_bounds(&self) -> bool {
+        !matches!(self, Method::Rsc)
+    }
+}
+
+/// Estimator options shared by every method in a geo run.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FitOptions {
+    /// Per-donor weight bounds (`lo ≤ w_j ≤ hi`) for the simplex-weighted
+    /// methods.
+    pub bounds: WeightBounds,
 }
 
 /// One point on a power curve: at a given true multiplicative lift, how often the

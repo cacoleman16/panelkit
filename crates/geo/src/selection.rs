@@ -8,7 +8,7 @@
 
 use crate::diagnostics::diagnostics;
 use crate::power::power_curve;
-use crate::types::Method;
+use crate::types::{FitOptions, Method};
 use panelkit_inference::par_map_items;
 use panelkit_linalg::rng::Xoshiro256pp;
 use panelkit_linalg::Mat;
@@ -56,6 +56,8 @@ pub struct SelectConfig {
     /// Number of most-recent historical placebo windows to power over.
     /// `None` = all available windows.
     pub lookback: Option<usize>,
+    /// Estimator options (per-donor weight bounds) applied to every fit.
+    pub opts: FitOptions,
 }
 
 /// Evaluate a single candidate set: quick power probe + diagnostics → score.
@@ -72,6 +74,7 @@ pub fn evaluate(y: &Mat, treated: &[usize], cfg: &SelectConfig) -> MarketCandida
         cfg.target_power,
         cfg.min_pre,
         cfg.lookback,
+        cfg.opts,
     );
     let power_at_target = pr
         .points

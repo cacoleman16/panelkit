@@ -26,31 +26,75 @@ import numpy as np
 
 from . import _panelkit
 
-_METHODS = ("SC", "ASC", "SDID")
-_ENSEMBLE_ORDER = ("SC", "ASC", "SDID")  # weight order expected by the Rust ensemble
+# Every base estimator the geo engine can fit, in report order. FP (the
+# Ferman-Pinto demeaned SC) and RSC (spectrally de-noised SC) join the classic
+# three: see benchmarks/sim_methods.py for the simulation evidence behind the
+# default membership — FP is the only member that survives a treated market whose
+# *level* sits outside the donor hull, and RSC is the one that extrapolates when
+# no convex combination matches the treated scale.
+_METHODS = ("SC", "ASC", "SDID", "FP", "RSC")
+_DEFAULT_ENSEMBLE = ("SC", "ASC", "SDID", "FP", "RSC")
 _DEFAULT_LIFTS = [0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.15, 0.20]
 
+# Human-readable names, so a report that names "FP" also says what it is.
+_METHOD_LABELS = {
+    "SC": "synthetic control",
+    "ASC": "augmented SC",
+    "SDID": "synthetic DiD",
+    "FP": "demeaned SC (Ferman-Pinto)",
+    "RSC": "robust / de-noised SC",
+    "ENSEMBLE": "weighted blend",
+}
 
-def _ensemble_weight_arg(spec):
-    """Turn an ensemble-weights spec into the ``[w_sc, w_asc, w_sdid]`` list the
-    Rust ensemble expects, or ``None`` for data-driven ("auto") weighting."""
+
+def _check_methods(methods, *, what="methods"):
+    """Normalize and validate a method list."""
+    out = [str(m).upper() for m in methods]
+    unknown = [m for m in out if m not in _METHODS]
+    if unknown:
+        raise ValueError(f"unknown {what} {unknown}; choose from {list(_METHODS)}")
+    return out
+
+
+def _ensemble_weight_arg(spec, members):
+    """Turn an ensemble-weights spec into one weight per ensemble member, or
+    ``None`` for data-driven ("auto") weighting."""
+    k = len(members)
     if spec is None or (isinstance(spec, str) and spec.lower() == "auto"):
         return None
     if isinstance(spec, str):
         if spec.lower() == "equal":
-            return [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]
+            return [1.0 / k] * k
         raise ValueError(f"unknown ensemble_weights {spec!r} (use 'auto', 'equal', "
-                         "a dict, or a 3-list)")
+                         "a dict, or one number per member)")
     if isinstance(spec, dict):
-        norm = {str(k).upper(): v for k, v in spec.items()}  # case-insensitive keys
-        w = [float(norm.get(m, 0.0)) for m in _ENSEMBLE_ORDER]
+        norm = {str(key).upper(): v for key, v in spec.items()}  # case-insensitive
+        stray = [key for key in norm if key not in members]
+        if stray:
+            raise ValueError(f"ensemble_weights names {stray} are not ensemble "
+                             f"members {list(members)}")
+        w = [float(norm.get(m, 0.0)) for m in members]
     else:
         w = [float(x) for x in spec]
-        if len(w) != 3:
-            raise ValueError("ensemble_weights list must be [w_sc, w_asc, w_sdid]")
+        if len(w) != k:
+            raise ValueError(f"ensemble_weights needs one number per member "
+                             f"{list(members)} ({k} of them); got {len(w)}")
     if any(x < 0 for x in w) or sum(w) <= 0:
         raise ValueError("ensemble_weights must be non-negative and sum to > 0")
     return w
+
+
+def _check_weight_bounds(min_weight, max_weight):
+    """Validate the per-donor weight box before it reaches Rust (the donor-count
+    feasibility check lives there, where the donor pool is known)."""
+    lo, hi = float(min_weight), float(max_weight)
+    if not (np.isfinite(lo) and 0.0 <= lo <= 1.0):
+        raise ValueError(f"min_weight must be in [0, 1]; got {min_weight}")
+    if not (np.isfinite(hi) and 0.0 < hi <= 1.0):
+        raise ValueError(f"max_weight must be in (0, 1]; got {max_weight}")
+    if lo > hi:
+        raise ValueError(f"min_weight ({lo}) must not exceed max_weight ({hi})")
+    return lo, hi
 
 
 def _block_bootstrap_paths(pre_gaps, length, block_len, n_reps, seed):
@@ -75,7 +119,7 @@ class _PowerReport:
     """Result of a power analysis across methods, with a report and plots."""
 
     def __init__(self, design, treated_idx, treated_names, test_len, results,
-                 diag, recommended, alpha, target_power):
+                 diag, recommended, alpha, target_power, ensemble_members=()):
         self._d = design
         self.treated_idx = treated_idx
         self.treated_names = treated_names
@@ -85,6 +129,8 @@ class _PowerReport:
         self.recommended = recommended
         self.alpha = alpha
         self.target_power = target_power
+        #: which base methods the "ENSEMBLE" row blends, in weight order
+        self.ensemble_members = tuple(ensemble_members)
 
     @property
     def best(self):
@@ -119,7 +165,9 @@ class _PowerReport:
         lines.append(f"Holdout (exposure): {100*d.holdout_pct:.1f}% of total volume")
         lines.append(f"Design confidence : {d.confidence:.0f}/100")
         lines.append("")
-        lines.append(f"Recommended method: {self.recommended}")
+        label = _METHOD_LABELS.get(self.recommended)
+        lines.append(f"Recommended method: {self.recommended}"
+                     + (f" ({label})" if label else ""))
         if self.mde_pct is not None:
             lines.append(
                 f"Minimum detectable effect (at {int(100*self.target_power)}% power, "
@@ -140,7 +188,8 @@ class _PowerReport:
         ens = self.results.get("ENSEMBLE")
         if ens is not None and ens.ensemble_weights is not None:
             wstr = ", ".join(f"{nm} {100*w:.0f}%"
-                             for nm, w in zip(_ENSEMBLE_ORDER, ens.ensemble_weights))
+                             for nm, w in zip(self.ensemble_members,
+                                              ens.ensemble_weights))
             lines.append(f"   ENSEMBLE weights: {wstr}")
         lines.append("")
         lines.append("Diagnostics:")
@@ -443,6 +492,9 @@ class GeoDesign:
         lookback: int | None = None,
         ensemble: bool = True,
         ensemble_weights="auto",
+        ensemble_members: Sequence[str] | None = None,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
         exclude=None,
     ) -> _PowerReport:
         """Power analysis for a specified treated-market set across methods.
@@ -452,11 +504,18 @@ class GeoDesign:
         which are most representative of the upcoming test.
 
         When ``ensemble=True`` (default) an extra ``"ENSEMBLE"`` result is added: a
-        weighted average of SC + ASC + SDID combined *per placebo window* (so its
-        power reflects the averaged estimator, which is usually steadier than any
-        one method). ``ensemble_weights`` is ``"auto"`` (data-driven inverse-variance
-        weighting from each method's historical-null spread), ``"equal"``, or a dict
-        like ``{"SC": 0.5, "ASC": 0.2, "SDID": 0.3}``.
+        weighted average of the ``ensemble_members`` estimators combined *per
+        placebo window* (so its power reflects the averaged estimator, which is
+        usually steadier than any one method). ``ensemble_members`` defaults to
+        whichever of ``methods`` were fitted. ``ensemble_weights`` is ``"auto"``
+        (data-driven inverse-variance weighting from each method's historical-null
+        spread), ``"equal"``, a dict like ``{"SC": 0.5, "SDID": 0.5}``, or one
+        number per member.
+
+        ``min_weight`` / ``max_weight`` bound every donor's weight (``max_weight``
+        caps concentration — no single donor may carry more than that share of the
+        synthetic market; ``min_weight`` forces diversification). They apply to the
+        simplex-weighted methods (SC, ASC, SDID, FP); RSC has no bounded weights.
 
         ``exclude`` drops markets entirely (e.g. contaminated or untrustworthy
         ones) so they're never used as donors/controls."""
@@ -469,18 +528,25 @@ class GeoDesign:
             return sub.power(tnames, test_len, lifts=lifts, methods=methods, alpha=alpha,
                              target_power=target_power, recommended=recommended,
                              lookback=lookback, ensemble=ensemble,
-                             ensemble_weights=ensemble_weights)
+                             ensemble_weights=ensemble_weights,
+                             ensemble_members=ensemble_members,
+                             min_weight=min_weight, max_weight=max_weight)
         idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
         self._check_donors_remain(idx)
         test_len = self._check_window(test_len)
         alpha = self._check_prob("alpha", alpha)
         target_power = self._check_prob("target_power", target_power)
-        methods = [str(m).upper() for m in methods]
-        unknown = [m for m in methods if m not in _METHODS]
-        if unknown:
-            raise ValueError(f"unknown methods {unknown}; choose from {list(_METHODS)}")
+        methods = _check_methods(methods)
+        lo, hi = _check_weight_bounds(min_weight, max_weight)
         if not methods and not ensemble:
             raise ValueError("methods is empty and ensemble=False — nothing to fit")
+        if ensemble_members is None:
+            members = list(methods) or list(_DEFAULT_ENSEMBLE)
+        else:
+            members = _check_methods(ensemble_members, what="ensemble_members")
+            if not members:
+                raise ValueError("ensemble_members is empty — pass at least one "
+                                 "method or ensemble=False")
         names = [self.names[i] for i in idx]
         lifts = list(_DEFAULT_LIFTS if lifts is None else lifts)
         bad = [x for x in lifts if not np.isfinite(x) or x < 0]
@@ -495,12 +561,14 @@ class GeoDesign:
         results = {}
         for m in methods:
             results[m] = _panelkit.geo_power(
-                self.Y, idx, test_len, lifts, m.lower(), alpha, target_power, 0, lb
+                self.Y, idx, test_len, lifts, m.lower(), alpha, target_power, 0, lb,
+                lo, hi,
             )
         if ensemble:
-            w = _ensemble_weight_arg(ensemble_weights)
+            w = _ensemble_weight_arg(ensemble_weights, members)
             results["ENSEMBLE"] = _panelkit.geo_power_ensemble(
-                self.Y, idx, test_len, lifts, alpha, target_power, 0, lb, w
+                self.Y, idx, test_len, lifts, alpha, target_power, 0, lb, w,
+                [m.lower() for m in members], lo, hi,
             )
         if recommended is None:
             # Auto: prefer SDID (the robust default), else the ensemble, else
@@ -516,7 +584,8 @@ class GeoDesign:
                     f"{sorted(results)}; pass one of those (or add it to `methods`)"
                 )
         diag = _panelkit.geo_diagnostics(self.Y, idx, test_len)
-        return _PowerReport(self, idx, names, test_len, results, diag, rec, alpha, target_power)
+        return _PowerReport(self, idx, names, test_len, results, diag, rec, alpha,
+                            target_power, ensemble_members=members if ensemble else ())
 
     def diagnose(self, treated, test_len: int, exclude=None) -> "_DiagnosticsReport":
         """Real-world guardrails for a treated-market set: pre-period fit,
@@ -562,6 +631,8 @@ class GeoDesign:
         exact_size: int | None = None,
         lookback: int | None = None,
         include=None,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
         exclude=None,
     ) -> list:
         """Search candidate treatment-market sets and return the top ranked.
@@ -588,7 +659,8 @@ class GeoDesign:
                 test_len, target_lift, max_treated, eligible=elig_names, method=method,
                 alpha=alpha, target_power=target_power, n_candidates=n_candidates,
                 seed=seed, top=top, exact_size=exact_size, lookback=lookback,
-                include=inc_names, exclude=None)
+                include=inc_names, min_weight=min_weight, max_weight=max_weight,
+                exclude=None)
 
         test_len = self._check_window(test_len)
         alpha = self._check_prob("alpha", alpha)
@@ -604,12 +676,13 @@ class GeoDesign:
         if exact_size is not None and len(inc) > int(exact_size):
             raise ValueError(f"include has {len(inc)} markets but exact_size="
                              f"{exact_size}; raise exact_size or include fewer")
+        lo, hi = _check_weight_bounds(min_weight, max_weight)
         ranked = _panelkit.geo_select(
             self.Y, elig, int(max_treated), test_len, float(target_lift),
             method.lower(), alpha, target_power, 0, int(n_candidates), int(seed),
             None if exact_size is None else int(exact_size),
             None if lookback is None else int(lookback),
-            inc or None,
+            inc or None, lo, hi,
         )
         out = []
         for c in ranked[:top]:
@@ -689,6 +762,9 @@ class GeoDesign:
         target_power: float = 0.80,
         recommended: str | None = None,
         lookback: int | None = None,
+        ensemble_members: Sequence[str] | None = None,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
     ) -> "_MultiCellReport":
         """Power a **simultaneous multi-cell** geo test.
 
@@ -709,7 +785,8 @@ class GeoDesign:
         shared_donors : list, optional
             Markets to use as the common control pool. Defaults to every market
             not assigned to any cell. May not overlap any cell.
-        lifts, methods, alpha, target_power, recommended, lookback :
+        lifts, methods, alpha, target_power, recommended, lookback,
+        ensemble_members, min_weight, max_weight :
             Passed through to :meth:`power` for each cell.
 
         Returns
@@ -764,6 +841,8 @@ class GeoDesign:
                 treated=local_treated, test_len=int(test_len), lifts=lifts,
                 methods=methods, alpha=alpha, target_power=target_power,
                 recommended=recommended, lookback=lookback,
+                ensemble_members=ensemble_members,
+                min_weight=min_weight, max_weight=max_weight,
             )
             # Restore real market names on the sub-report for display.
             reports[label].treated_names = [self.names[i] for i in idx]
@@ -787,6 +866,8 @@ class GeoDesign:
         n_boot: int = 2000,
         block_len: int = 4,
         seed: int = 0,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
         exclude=None,
     ) -> "_EvalReport":
         """Estimate the realized effect of a geo test that has **already run**.
@@ -817,8 +898,10 @@ class GeoDesign:
             Treated markets (names or indices).
         treat_start : int
             First treated period (column index) — the test start.
-        methods : sequence of {"SC","ASC","SDID"}
-            Which estimators to fit and blend.
+        methods : sequence of {"SC","ASC","SDID","FP","RSC"}
+            Which estimators to fit and blend. ``FP`` is the Ferman-Pinto
+            demeaned SC (robust to a treated level outside the donor hull);
+            ``RSC`` is spectrally de-noised SC (extrapolates beyond the hull).
         weights : "auto" | "equal" | dict
             Ensemble weighting. ``"auto"`` is inverse-variance (precision)
             weighting from each method's placebo-null spread.
@@ -828,6 +911,11 @@ class GeoDesign:
             Cap on the number of donor placebos used (sampled if exceeded).
         seed : int
             Seed for placebo sampling when ``max_placebo`` is exceeded.
+        min_weight, max_weight : float
+            Per-donor weight bounds for the simplex-weighted methods:
+            ``max_weight=0.25`` forbids any single donor from carrying more than
+            a quarter of the synthetic market, ``min_weight`` forces every donor
+            to carry at least that share. RSC has no bounded weights.
 
         Returns
         -------
@@ -844,7 +932,8 @@ class GeoDesign:
                 raise ValueError(f"treated markets were also excluded: {bad}")
             return sub.evaluate(tnames, treat_start, methods=methods, weights=weights,
                                 level=level, inference=inference, max_placebo=max_placebo,
-                                n_boot=n_boot, block_len=block_len, seed=seed)
+                                n_boot=n_boot, block_len=block_len, seed=seed,
+                                min_weight=min_weight, max_weight=max_weight)
         idx = list(dict.fromkeys(self._resolve(treated)))  # dedup, preserve order
         self._check_donors_remain(idx)
         names = [self.names[i] for i in idx]
@@ -853,20 +942,22 @@ class GeoDesign:
             raise ValueError(f"treat_start must be in [1, {self.t}); got {t0}")
         level = self._check_prob("level", level)
         n_treated = len(idx)
-        methods = [str(m).upper() for m in methods]
+        methods = _check_methods(methods)
         if not methods:
             raise ValueError("methods is empty — nothing to fit")
-        unknown = [m for m in methods if m not in _METHODS]
-        if unknown:
-            raise ValueError(f"unknown methods {unknown}; choose from {list(_METHODS)}")
+        lo, hi = _check_weight_bounds(min_weight, max_weight)
 
         def _fit(method, tr, Y=None):
             Y = self.Y if Y is None else Y
             if method == "SC":
-                return _panelkit.fit_sc(Y, tr, t0, 0.0, False, level)
+                return _panelkit.fit_sc(Y, tr, t0, 0.0, False, level, 0.0, lo, hi)
             if method == "ASC":
-                return _panelkit.fit_asc(Y, tr, t0, 0.0, None)
-            return _panelkit.fit_sdid(Y, tr, t0, 1.0)
+                return _panelkit.fit_asc(Y, tr, t0, 0.0, None, False, level, lo, hi)
+            if method == "FP":
+                return _panelkit.fit_fp(Y, tr, t0, 0.0, False, level, lo, hi)
+            if method == "RSC":
+                return _panelkit.fit_rsc(Y, tr, t0)
+            return _panelkit.fit_sdid(Y, tr, t0, 1.0, "none", level, lo, hi)
 
         treated_series = self.Y[idx].mean(axis=0)
         post_len = self.t - t0
@@ -1307,8 +1398,10 @@ _PK_GREEN = "#059669"
 _PK_AMBER = "#d97706"
 _PK_GREY = "#9ca3af"
 _PK_PURPLE = "#7c3aed"
+_PK_TEAL = "#0d9488"
+_PK_PINK = "#db2777"
 _METHOD_COLORS = {"SC": _PK_GREY, "ASC": _PK_AMBER, "SDID": _PK_BLUE,
-                  "ENSEMBLE": _PK_PURPLE}
+                  "FP": _PK_TEAL, "RSC": _PK_PINK, "ENSEMBLE": _PK_PURPLE}
 
 
 def _require_mpl():

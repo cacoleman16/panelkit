@@ -85,6 +85,8 @@ better — SC/SDID lean on pre-treatment fit).
 | `SyntheticControl` | Abadie et al. 2010 | block | one/few treated units, transparent weights |
 | `AugmentedSC` | Ben-Michael et al. 2021 | block | poor pre-fit (ridge bias correction) |
 | `SyntheticDiD` | Arkhangelsky et al. 2021 | block | **robust general default** |
+| `DemeanedSC` | Ferman-Pinto 2021 | block | treated level outside the donor hull |
+| `RobustSC` | Amjad-Shah-Shen 2018 | block | low-rank donors; extrapolates past the hull |
 | `MCNNM` | Athey et al. 2021 | block | low-rank structure, many treated cells |
 | `CPASC` | novel (this project) | block, multi-treated | conservative pooled inference, cumulative $ lift |
 | `TWFE` | two-way FE | staggered | baseline (biased under heterogeneity) |
@@ -121,14 +123,37 @@ res = SyntheticDiD().fit(Y, treated=[0], treat_time=45)
 print(res.att)          # unit + time weighted 2×2 DiD
 ```
 
-### Augmented SC and MC-NNM
+### Augmented SC, demeaned SC, robust SC and MC-NNM
 
 ```python
-from panelkit import AugmentedSC, MCNNM
+from panelkit import AugmentedSC, DemeanedSC, MCNNM, RobustSC
 
 AugmentedSC().fit(Y, treated=[0], treat_time=45).att          # ridge-corrected SC
+DemeanedSC().fit(Y, treated=[0], treat_time=45).att           # Ferman-Pinto: SC on deviations
+RobustSC().fit(Y, treated=[0], treat_time=45).att             # spectral de-noising, extrapolates
 MCNNM().fit(Y, treated=[0], treat_time=45).att                # low-rank completion, λ by CV
 ```
+
+`DemeanedSC` is the one to reach for when the treated unit's *level* sits outside
+the donor hull — plain SC spends its weights trying to close a gap it cannot
+close, and reports the remainder as effect.
+
+### Bounding donor weights
+
+```python
+# no single donor may carry more than 20% of the synthetic unit …
+SyntheticControl(max_weight=0.20).fit(Y, treated=[0], treat_time=45)
+# … and every donor carries at least 1% (forced diversification)
+SyntheticDiD(min_weight=0.01, max_weight=0.20).fit(Y, treated=[0], treat_time=45)
+
+# Abadie & L'Hour (2021): prefer donors that individually resemble the treated unit
+SyntheticControl(penalty=0.5).fit(Y, treated=[0], treat_time=45)
+```
+
+Weights stay on the simplex; the box is solved exactly (accelerated projected
+gradient with an active-set polish) rather than by clipping after the fact.
+`max_weight` is the guard against a counterfactual that is really just one donor
+market. The same options are on `GeoDesign.power`/`evaluate`/`select_markets`.
 
 ### CP-ASC — conformal pooled SC (multiple treated units)
 
@@ -214,7 +239,7 @@ mc.plot("multicell.png")      # the multi-cell figure below
 ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3,
                                include=["chicago"], exclude=["miami"])
 
-# already ran the test? measure it (SC/ASC/SDID + a weighted-average ensemble):
+# already ran the test? measure it (SC/ASC/SDID/FP/RSC + a weighted-average ensemble):
 ev = design.evaluate(treated=["chicago", "denver"], treat_start=52)
 print(ev.summary())           # per-method + ensemble lift, CI, cumulative
 ev.plot("evaluate.png")       # observed vs counterfactual + lift-by-method
@@ -250,7 +275,7 @@ per-cell MDE/confidence/holdout report and a combined figure:
 ![multi-cell test](assets/geo_multicell.png)
 
 **Evaluate a test that ran.** `evaluate(...)` is the measurement counterpart to
-the power analysis: fit SC / ASC / SDID on a test that already happened, blend
+the power analysis: fit the SC family on a test that already happened, blend
 them into a weighted-average **ensemble** estimate, and report each one's lift,
 confidence interval (in-space placebo), and cumulative incremental —
 with an in-space placebo p-value:
@@ -278,8 +303,9 @@ gappy. You don't pre-clean dtypes.
 What you get out of the box:
 
 - **Real-data power** — historical placebo with injected lift on your *actual*
-  panel (not an assumed variance), across **SC, ASC, and SDID** with a
-  recommended method, plus a naive-DiD baseline for improvement-over-naive.
+  panel (not an assumed variance), across **SC, ASC, SDID, demeaned SC
+  (Ferman-Pinto) and robust SC** with a recommended method, plus a naive-DiD
+  baseline for improvement-over-naive.
 - **MDE three ways** — minimum detectable effect as a **% lift**, an **absolute**
   per-period change, and the **cumulative** incremental over the whole window,
   each with confidence intervals.
@@ -292,8 +318,13 @@ What you get out of the box:
   power, MDE, fit, holdout, and confidence.
 - **Multi-cell tests** — several disjoint treatment cells powered at once against
   a shared donor pool, with a per-cell MDE/confidence report.
-- **A weighted-average ensemble** of SC + ASC + SDID (combined per placebo window,
-  with auto inverse-variance weights) for a steadier estimate than any one method.
+- **A weighted-average ensemble** of the base methods (combined per placebo
+  window, with auto inverse-variance weights) for a steadier estimate than any
+  one method — configurable via `ensemble_members`, and justified by the
+  simulation study in [`benchmarks/sim_methods.py`](benchmarks/sim_methods.py).
+- **Donor weight bounds** — `max_weight` caps how much of the synthetic market any
+  single donor may carry, `min_weight` forces diversification; both work on
+  `power()`, `evaluate()`, `select_markets()` and the estimator classes.
 - **Post-test evaluation** — `evaluate()` measures a test that already ran:
   per-method + ensemble lift, in-space placebo CIs, cumulative incremental, and a p-value.
 

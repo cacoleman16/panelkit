@@ -182,6 +182,20 @@ def _attach_bootstrap(result, inference, level, block_len, n_reps, seed):
     return result
 
 
+def _check_weight_bounds(min_weight: float, max_weight: float):
+    """Per-donor weight box: ``min_weight <= w_j <= max_weight`` on top of the
+    simplex. The donor-count feasibility check (``J·min <= 1 <= J·max``) happens
+    in Rust, where the donor pool is known."""
+    lo, hi = float(min_weight), float(max_weight)
+    if not (np.isfinite(lo) and 0.0 <= lo <= 1.0):
+        raise ValueError(f"min_weight must be in [0, 1]; got {min_weight}")
+    if not (np.isfinite(hi) and 0.0 < hi <= 1.0):
+        raise ValueError(f"max_weight must be in (0, 1]; got {max_weight}")
+    if lo > hi:
+        raise ValueError(f"min_weight ({lo}) must not exceed max_weight ({hi})")
+    return lo, hi
+
+
 def _as_matrix(y) -> np.ndarray:
     arr = np.ascontiguousarray(np.asarray(y, dtype=np.float64))
     if arr.ndim != 2:
@@ -215,6 +229,18 @@ class SyntheticControl:
     ----------
     ridge:
         Ridge penalty on the donor weights (0.0 = classic SC).
+    penalty:
+        Abadie & L'Hour (2021) dissimilarity penalty. Adds
+        ``penalty * sum_j w_j * ||y_pre - donor_j||^2`` to the objective, so
+        among weight vectors that fit the pre-period equally well the solver
+        prefers the one built from donors that individually resemble the treated
+        unit. ``0.0`` = classic (unpenalized) SC.
+    min_weight, max_weight:
+        Per-donor weight bounds. ``max_weight=0.25`` forbids any single donor
+        from carrying more than a quarter of the synthetic unit (a concentration
+        cap); ``min_weight=0.02`` forces every donor to carry at least 2% (a
+        diversification floor). Needs ``J*min_weight <= 1 <= J*max_weight`` for
+        ``J`` donors.
     inference:
         ``"placebo"`` (in-space placebo p-value), ``"block"`` / ``"stationary"``
         (block / stationary bootstrap of the post-period gap → SE + CI), or
@@ -233,9 +259,14 @@ class SyntheticControl:
         block_len: int = 4,
         n_reps: int = 2000,
         seed: int = 0,
+        penalty: float = 0.0,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
     ):
         _check_inference(inference, ("placebo", "block", "stationary"), "SyntheticControl")
         self.ridge = ridge
+        self.penalty = penalty
+        self.min_weight, self.max_weight = _check_weight_bounds(min_weight, max_weight)
         self.inference = inference
         self.level = _check_level(level)
         self.block_len = block_len
@@ -255,6 +286,9 @@ class SyntheticControl:
             self.ridge,
             do_placebo,
             self.level,
+            self.penalty,
+            self.min_weight,
+            self.max_weight,
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
@@ -268,7 +302,8 @@ class SyntheticControl:
         treat_time = _as_period("treat_time", treat_time)
         _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
         return np.asarray(
-            _panelkit.fit_many(stack, treated, treat_time, "sc", self.ridge, 1.0),
+            _panelkit.fit_many(stack, treated, treat_time, "sc", self.ridge, 1.0,
+                               self.min_weight, self.max_weight),
             dtype=float,
         )
 
@@ -293,6 +328,8 @@ class AugmentedSC:
         block_len: int = 4,
         n_reps: int = 2000,
         seed: int = 0,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
     ):
         _check_inference(inference, ("placebo", "block", "stationary"), "AugmentedSC")
         if aug_lambda is not None and not (float(aug_lambda) > 0.0):
@@ -301,6 +338,7 @@ class AugmentedSC:
             )
         self.sc_ridge = sc_ridge
         self.aug_lambda = aug_lambda
+        self.min_weight, self.max_weight = _check_weight_bounds(min_weight, max_weight)
         self.inference = inference
         self.level = _check_level(level)
         self.block_len = block_len
@@ -315,6 +353,7 @@ class AugmentedSC:
         raw = _panelkit.fit_asc(
             mat, treated, treat_time, self.sc_ridge, self.aug_lambda,
             self.inference == "placebo", self.level,
+            self.min_weight, self.max_weight,
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
@@ -327,7 +366,8 @@ class AugmentedSC:
         treat_time = _as_period("treat_time", treat_time)
         _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
         return np.asarray(
-            _panelkit.fit_many(stack, treated, treat_time, "asc", self.sc_ridge, 1.0),
+            _panelkit.fit_many(stack, treated, treat_time, "asc", self.sc_ridge, 1.0,
+                               self.min_weight, self.max_weight),
             dtype=float,
         )
 
@@ -353,11 +393,14 @@ class SyntheticDiD:
         block_len: int = 4,
         n_reps: int = 2000,
         seed: int = 0,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
     ):
         _check_inference(
             inference, ("placebo", "jackknife", "block", "stationary"), "SyntheticDiD"
         )
         self.zeta_scale = zeta_scale
+        self.min_weight, self.max_weight = _check_weight_bounds(min_weight, max_weight)
         self.inference = inference
         self.level = _check_level(level)
         self.block_len = block_len
@@ -378,7 +421,8 @@ class SyntheticDiD:
                 "for a single treated unit"
             )
         raw = _panelkit.fit_sdid(
-            mat, treated, treat_time, self.zeta_scale, rust_inference, self.level
+            mat, treated, treat_time, self.zeta_scale, rust_inference, self.level,
+            self.min_weight, self.max_weight,
         )
         return _attach_bootstrap(
             _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
@@ -391,7 +435,154 @@ class SyntheticDiD:
         treat_time = _as_period("treat_time", treat_time)
         _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
         return np.asarray(
-            _panelkit.fit_many(stack, treated, treat_time, "sdid", 0.0, self.zeta_scale),
+            _panelkit.fit_many(stack, treated, treat_time, "sdid", 0.0, self.zeta_scale,
+                               self.min_weight, self.max_weight),
+            dtype=float,
+        )
+
+
+class DemeanedSC:
+    """Demeaned Synthetic Control (Ferman & Pinto 2021) — "DSC".
+
+    Classic SC matches the treated unit's pre-treatment *levels*. When the
+    treated market's level sits outside the convex hull of the donors (a big DMA
+    against mid-size donors, say), no convex combination can reach it, the
+    weights are spent trying, and the ATT inherits the gap. This estimator
+    subtracts each unit's own pre-treatment mean first, fits the same
+    simplex-constrained weights on those deviations, and adds the treated unit's
+    level back — SC with a free intercept.
+
+    Use it when the pre-period fit is imperfect for level reasons, or as an
+    ensemble member alongside SC/ASC/SDID. It does not fix a *scale* mismatch
+    (donors that move proportionally less than the treated unit) — that is what
+    :class:`AugmentedSC` and :class:`RobustSC` are for.
+
+    Parameters
+    ----------
+    ridge:
+        Ridge penalty on the donor weights (0.0 = as in the paper).
+    min_weight, max_weight:
+        Per-donor weight bounds, as in :class:`SyntheticControl`.
+    inference:
+        ``"placebo"`` (in-space placebo), ``"block"`` / ``"stationary"``
+        (bootstrap of the post-period gap), or ``None``.
+    """
+
+    def __init__(
+        self,
+        ridge: float = 0.0,
+        inference: str | None = None,
+        level: float = 0.95,
+        block_len: int = 4,
+        n_reps: int = 2000,
+        seed: int = 0,
+        min_weight: float = 0.0,
+        max_weight: float = 1.0,
+    ):
+        _check_inference(inference, ("placebo", "block", "stationary"), "DemeanedSC")
+        self.ridge = ridge
+        self.min_weight, self.max_weight = _check_weight_bounds(min_weight, max_weight)
+        self.inference = inference
+        self.level = _check_level(level)
+        self.block_len = block_len
+        self.n_reps = n_reps
+        self.seed = seed
+
+    def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
+        mat = _as_matrix(y)
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
+        _validate_block(mat, treated, treat_time)
+        raw = _panelkit.fit_fp(
+            mat, treated, treat_time, self.ridge, self.inference == "placebo",
+            self.level, self.min_weight, self.max_weight,
+        )
+        return _attach_bootstrap(
+            _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
+        )
+
+    def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
+        """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
+        stack = _as_stack(panels)
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
+        _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
+        return np.asarray(
+            _panelkit.fit_many(stack, treated, treat_time, "fp", self.ridge, 1.0,
+                               self.min_weight, self.max_weight),
+            dtype=float,
+        )
+
+
+class RobustSC:
+    """Robust / spectrally de-noised Synthetic Control (Amjad, Shah & Shen 2018).
+
+    The matrix-completion view of synthetic control: assume the donor panel is a
+    low-rank signal plus noise, hard-threshold its spectrum, and regress the
+    treated pre-period on the de-noised factors. The weights are **not**
+    constrained to the simplex — they may be negative and need not sum to one —
+    which is exactly what lets the estimator extrapolate when the treated unit
+    sits outside the donor hull, and why ``min_weight``/``max_weight`` do not
+    apply to it.
+
+    Parameters
+    ----------
+    rank:
+        Retained rank. ``None`` picks the smallest rank carrying ``energy`` of
+        the squared spectrum.
+    energy:
+        Spectral-energy target for automatic rank selection.
+    ridge:
+        Ridge penalty on the (rank-dimensional) regression. Normally 0 — the
+        truncation is already the regularizer.
+    """
+
+    def __init__(
+        self,
+        rank: int | None = None,
+        energy: float = 0.999,
+        ridge: float = 0.0,
+        inference: str | None = None,
+        level: float = 0.95,
+        block_len: int = 4,
+        n_reps: int = 2000,
+        seed: int = 0,
+    ):
+        _check_inference(inference, ("placebo", "block", "stationary"), "RobustSC")
+        if rank is not None and int(rank) < 1:
+            raise ValueError(f"rank must be >= 1 (or None for automatic); got {rank}")
+        if not (0.0 < float(energy) < 1.0):
+            raise ValueError(f"energy must be in (0, 1); got {energy}")
+        self.rank = None if rank is None else int(rank)
+        self.energy = float(energy)
+        self.ridge = ridge
+        self.inference = inference
+        self.level = _check_level(level)
+        self.block_len = block_len
+        self.n_reps = n_reps
+        self.seed = seed
+
+    def fit(self, y, treated: Sequence[int], treat_time: int) -> _Result:
+        mat = _as_matrix(y)
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
+        _validate_block(mat, treated, treat_time)
+        raw = _panelkit.fit_rsc(
+            mat, treated, treat_time, self.rank, self.energy, self.ridge,
+            self.inference == "placebo", self.level,
+        )
+        return _attach_bootstrap(
+            _Result(raw), self.inference, self.level, self.block_len, self.n_reps, self.seed
+        )
+
+    def fit_many(self, panels, treated: Sequence[int], treat_time: int) -> np.ndarray:
+        """Fit across a stack of panels ``(R, N, T)`` in parallel; returns R ATTs."""
+        stack = _as_stack(panels)
+        treated = _as_index_list("treated", treated)
+        treat_time = _as_period("treat_time", treat_time)
+        _validate_block(np.zeros(stack.shape[1:]), treated, treat_time)
+        return np.asarray(
+            _panelkit.fit_many(stack, treated, treat_time, "rsc"),
             dtype=float,
         )
 

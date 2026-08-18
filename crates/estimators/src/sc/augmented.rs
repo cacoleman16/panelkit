@@ -26,7 +26,7 @@ use crate::result::ScFit;
 use panelkit_linalg::factor::cholesky::Cholesky;
 use panelkit_linalg::ops::matmul::{matvec, syrk_aat};
 use panelkit_linalg::ops::norms::nrm2;
-use panelkit_linalg::opt::simplex::sc_weights;
+use panelkit_linalg::opt::simplex::{sc_weights_bounded, WeightBounds};
 use panelkit_linalg::Mat;
 
 /// Configuration for augmented SC.
@@ -37,6 +37,11 @@ pub struct AscConfig {
     /// Ridge penalty `λ` for the augmentation outcome model. If `None`, picked
     /// automatically as a fraction of the mean spectral scale.
     pub aug_lambda: Option<f64>,
+    /// Per-donor weight bounds (`lo ≤ w_j ≤ hi`) for the SC step; default =
+    /// plain simplex. The ridge augmentation is applied on top of the bounded
+    /// weights, so a cap constrains what the synthetic unit is built from
+    /// without blocking the bias correction.
+    pub bounds: WeightBounds,
 }
 
 impl Default for AscConfig {
@@ -44,6 +49,7 @@ impl Default for AscConfig {
         AscConfig {
             sc_ridge: 0.0,
             aug_lambda: None,
+            bounds: WeightBounds::default(),
         }
     }
 }
@@ -83,7 +89,7 @@ pub fn fit_series(
     cfg: AscConfig,
 ) -> ScFit {
     // 1. SC weights on the pre-period.
-    let w = sc_weights(z0, y_pre, cfg.sc_ridge).w;
+    let w = sc_weights_bounded(z0, y_pre, cfg.sc_ridge, cfg.bounds).w;
 
     // 2. Pre-period imbalance.
     let pre_hat = matvec(z0, &w);

@@ -127,9 +127,11 @@ print("\nwrote", asset("geo_multicell.png"))
 # 5) Evaluate a test that already ran (post-test measurement).
 # ===========================================================================
 # `power()` plans a test; `evaluate()` measures one. The power report above
-# already includes an ENSEMBLE row — a weighted average of SC + ASC + SDID
-# (auto inverse-variance weights). Here we *run* a synthetic test: inject a known
-# +6% lift on the treated markets over the last 8 periods, then recover it.
+# already includes an ENSEMBLE row — a weighted average of the base methods
+# (SC, ASC, SDID, the Ferman-Pinto demeaned SC, and robust SC) with auto
+# inverse-variance weights; `ensemble_members=[...]` picks a different blend.
+# Here we *run* a synthetic test: inject a known +6% lift on the treated markets
+# over the last 8 periods, then recover it.
 import numpy as _np  # noqa: E402
 
 Y_test = design.Y.copy()

@@ -27,6 +27,8 @@ fn _panelkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(api_sc::fit_sc, m)?)?;
     m.add_function(wrap_pyfunction!(api_sc::fit_asc, m)?)?;
     m.add_function(wrap_pyfunction!(api_sc::fit_sdid, m)?)?;
+    m.add_function(wrap_pyfunction!(api_sc::fit_fp, m)?)?;
+    m.add_function(wrap_pyfunction!(api_sc::fit_rsc, m)?)?;
     m.add_function(wrap_pyfunction!(api_sc::fit_mcnnm, m)?)?;
     m.add_function(wrap_pyfunction!(api_sc::fit_cpasc, m)?)?;
     m.add_function(wrap_pyfunction!(api_sc::bootstrap_mean, m)?)?;

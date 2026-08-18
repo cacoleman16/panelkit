@@ -23,4 +23,4 @@ pub mod types;
 pub use diagnostics::diagnostics;
 pub use power::{power_curve, power_curve_ensemble};
 pub use selection::{evaluate, select_markets, MarketCandidate, SelectConfig};
-pub use types::{Diagnostics, Method, PowerPoint, PowerResult};
+pub use types::{Diagnostics, FitOptions, Method, PowerPoint, PowerResult, BASE_METHODS};

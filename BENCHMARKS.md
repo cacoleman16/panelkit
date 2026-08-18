@@ -11,8 +11,14 @@ maturin develop --release --manifest-path crates/pypanelkit/Cargo.toml
 python benchmarks/make_plots.py      # the figures used in the README
 python benchmarks/bench_sc.py        # single SC fit vs NumPy+SLSQP
 python benchmarks/bench_placebo.py   # full placebo inference vs NumPy+SLSQP
+python benchmarks/sim_methods.py     # accuracy study: which methods earn an
+                                     # ensemble seat (--mde adds the MDE view)
 cargo bench -p panelkit-estimators   # Rust-side criterion micro-benchmarks
 ```
+
+Note that `sim_methods.py` measures **accuracy**, not speed: it is the evidence
+behind the geo ensemble's membership (see the ENSEMBLE section of
+[GUIDE.md](GUIDE.md)).
 
 ## Single synthetic-control fit vs reference
 

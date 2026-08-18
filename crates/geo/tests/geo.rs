@@ -1,10 +1,11 @@
 //! Tests for the geo design engine: power monotonicity, MDE sanity, diagnostics,
 //! and market selection.
 
-use panelkit_geo::power::power_curve;
+use panelkit_geo::power::{power_curve, power_curve_ensemble};
 use panelkit_geo::selection::{select_markets, SelectConfig};
-use panelkit_geo::types::Method;
+use panelkit_geo::types::{FitOptions, Method, BASE_METHODS};
 use panelkit_geo::{diagnostics, Diagnostics};
+use panelkit_linalg::opt::simplex::WeightBounds;
 use panelkit_linalg::rng::Xoshiro256pp;
 use panelkit_linalg::Mat;
 
@@ -31,7 +32,18 @@ fn geo_panel(n: usize, t: usize, seed: u64) -> Mat {
 fn power_increases_with_lift_and_mde_is_sane() {
     let y = geo_panel(15, 60, 1);
     let lifts = vec![0.0, 0.02, 0.05, 0.10, 0.20];
-    let pr = power_curve(&y, &[0], 10, &lifts, Method::Sc, 0.10, 0.8, 20, None);
+    let pr = power_curve(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        Method::Sc,
+        0.10,
+        0.8,
+        20,
+        None,
+        FitOptions::default(),
+    );
 
     // Power is (weakly) increasing in lift.
     for w in pr.points.windows(2) {
@@ -64,8 +76,30 @@ fn power_increases_with_lift_and_mde_is_sane() {
 fn lookback_limits_to_recent_windows() {
     let y = geo_panel(15, 60, 1);
     let lifts = vec![0.0, 0.05];
-    let all = power_curve(&y, &[0], 10, &lifts, Method::Sc, 0.10, 0.8, 20, None);
-    let recent = power_curve(&y, &[0], 10, &lifts, Method::Sc, 0.10, 0.8, 20, Some(8));
+    let all = power_curve(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        Method::Sc,
+        0.10,
+        0.8,
+        20,
+        None,
+        FitOptions::default(),
+    );
+    let recent = power_curve(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        Method::Sc,
+        0.10,
+        0.8,
+        20,
+        Some(8),
+        FitOptions::default(),
+    );
     assert_eq!(recent.n_windows, 8, "lookback should cap to 8 windows");
     assert!(
         all.n_windows > recent.n_windows,
@@ -77,7 +111,18 @@ fn lookback_limits_to_recent_windows() {
 fn estimated_lift_tracks_true_lift() {
     let y = geo_panel(15, 60, 2);
     let lifts = vec![0.0, 0.10];
-    let pr = power_curve(&y, &[0], 10, &lifts, Method::Sc, 0.10, 0.8, 20, None);
+    let pr = power_curve(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        Method::Sc,
+        0.10,
+        0.8,
+        20,
+        None,
+        FitOptions::default(),
+    );
     // At a 10% injected lift, the mean estimated lift should be in the ballpark.
     let p10 = pr.points.last().unwrap();
     assert!(
@@ -103,7 +148,18 @@ fn all_three_methods_run() {
     let y = geo_panel(15, 60, 4);
     let lifts = vec![0.0, 0.10];
     for m in [Method::Sc, Method::Asc, Method::Sdid] {
-        let pr = power_curve(&y, &[0], 10, &lifts, m, 0.10, 0.8, 20, None);
+        let pr = power_curve(
+            &y,
+            &[0],
+            10,
+            &lifts,
+            m,
+            0.10,
+            0.8,
+            20,
+            None,
+            FitOptions::default(),
+        );
         assert_eq!(pr.method, m);
         assert_eq!(pr.points.len(), 2);
     }
@@ -126,6 +182,7 @@ fn market_selection_ranks_candidates() {
         seed: 7,
         exact_size: None,
         lookback: None,
+        opts: FitOptions::default(),
     };
     let ranked = select_markets(&y, &cfg);
     assert!(!ranked.is_empty());
@@ -154,4 +211,141 @@ fn market_selection_ranks_candidates() {
         assert!(c.holdout_pct > 0.0 && c.holdout_pct < 1.0);
         assert!(c.confidence >= 0.0 && c.confidence <= 100.0);
     }
+}
+
+#[test]
+fn every_base_method_produces_a_sane_power_curve() {
+    let y = geo_panel(15, 60, 9);
+    let lifts = vec![0.0, 0.05, 0.20];
+    for m in BASE_METHODS {
+        let pr = power_curve(
+            &y,
+            &[0],
+            10,
+            &lifts,
+            m,
+            0.10,
+            0.8,
+            20,
+            None,
+            FitOptions::default(),
+        );
+        assert_eq!(pr.method.name(), m.name());
+        assert!(
+            pr.points[0].power <= pr.points[2].power + 1e-12,
+            "{}: power should not fall as lift grows",
+            m.name()
+        );
+        assert!(pr.se_null.is_finite() && pr.se_null >= 0.0);
+    }
+}
+
+#[test]
+fn ensemble_accepts_any_member_set_and_reports_matching_weights() {
+    let y = geo_panel(15, 60, 10);
+    let lifts = vec![0.0, 0.05, 0.20];
+    for members in [
+        &[Method::Sc, Method::Asc, Method::Sdid][..],
+        &[Method::Sc, Method::Asc, Method::Sdid, Method::Fp][..],
+        &BASE_METHODS[..],
+        &[Method::Fp][..],
+    ] {
+        let (pr, w) = power_curve_ensemble(
+            &y,
+            &[0],
+            10,
+            &lifts,
+            0.10,
+            0.8,
+            20,
+            None,
+            members,
+            None,
+            FitOptions::default(),
+        );
+        assert_eq!(pr.method.name(), "ENSEMBLE");
+        assert_eq!(w.len(), members.len(), "one weight per member");
+        let sum: f64 = w.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-12 && w.iter().all(|&x| x >= 0.0));
+    }
+    // A single-member ensemble must reproduce that member exactly.
+    let (ens, _) = power_curve_ensemble(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        0.10,
+        0.8,
+        20,
+        None,
+        &[Method::Sdid],
+        None,
+        FitOptions::default(),
+    );
+    let solo = power_curve(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        Method::Sdid,
+        0.10,
+        0.8,
+        20,
+        None,
+        FitOptions::default(),
+    );
+    assert!((ens.se_null - solo.se_null).abs() < 1e-12);
+    assert_eq!(ens.mde_pct, solo.mde_pct);
+}
+
+#[test]
+fn explicit_ensemble_weights_are_normalized_and_honoured() {
+    let y = geo_panel(15, 60, 11);
+    let lifts = vec![0.0, 0.05];
+    let members = [Method::Sc, Method::Sdid, Method::Fp];
+    let (_, w) = power_curve_ensemble(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        0.10,
+        0.8,
+        20,
+        None,
+        &members,
+        Some(&[2.0, 1.0, 1.0]),
+        FitOptions::default(),
+    );
+    assert!((w[0] - 0.5).abs() < 1e-12 && (w[1] - 0.25).abs() < 1e-12);
+}
+
+#[test]
+fn donor_weight_bounds_change_the_power_curve() {
+    let y = geo_panel(15, 60, 12);
+    let lifts = vec![0.0, 0.05];
+    let opts = FitOptions {
+        bounds: WeightBounds::max_weight(0.2),
+    };
+    let free = power_curve(
+        &y,
+        &[0],
+        10,
+        &lifts,
+        Method::Sc,
+        0.10,
+        0.8,
+        20,
+        None,
+        FitOptions::default(),
+    );
+    let capped = power_curve(&y, &[0], 10, &lifts, Method::Sc, 0.10, 0.8, 20, None, opts);
+    // Market 0 is a 50/50 mix of two donors, so a 20% cap must bind and widen
+    // the historical-null spread.
+    assert!(
+        (free.se_null - capped.se_null).abs() > 1e-9,
+        "cap did not affect the fit: {} vs {}",
+        free.se_null,
+        capped.se_null
+    );
+    assert!(capped.se_null.is_finite());
 }

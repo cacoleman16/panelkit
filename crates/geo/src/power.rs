@@ -12,35 +12,67 @@
 //! The fits are the heavy part (windows × lifts × methods × candidate markets);
 //! they run in parallel via the `parallel` feature.
 
-use crate::types::{Method, PowerPoint, PowerResult};
+use crate::types::{FitOptions, Method, PowerPoint, PowerResult};
 use panelkit_estimators::sc::{
-    fit_asc_at, fit_at as fit_sc_at, fit_sdid_at, AscConfig, ScConfig, SdidConfig,
+    fit_asc_at, fit_at as fit_sc_at, fit_fp_at, fit_rsc_at, fit_sdid_at, AscConfig, FpConfig,
+    RscConfig, ScConfig, SdidConfig,
 };
 use panelkit_estimators::{Panel, ScFit};
 use panelkit_inference::par_map_items;
 use panelkit_linalg::Mat;
 
 /// Fit the chosen estimator on a (sub-)panel with first post-period `t0`.
-pub(crate) fn fit_method(panel: &Panel, t0: usize, method: Method) -> ScFit {
+pub(crate) fn fit_method(panel: &Panel, t0: usize, method: Method, opts: FitOptions) -> ScFit {
     match method {
-        Method::Sc => fit_sc_at(panel, t0, ScConfig::default()),
-        Method::Asc => fit_asc_at(panel, t0, AscConfig::default()),
-        Method::Sdid => fit_sdid_at(panel, t0, SdidConfig::default()),
+        Method::Sc => fit_sc_at(
+            panel,
+            t0,
+            ScConfig {
+                bounds: opts.bounds,
+                ..ScConfig::default()
+            },
+        ),
+        Method::Asc => fit_asc_at(
+            panel,
+            t0,
+            AscConfig {
+                bounds: opts.bounds,
+                ..AscConfig::default()
+            },
+        ),
+        Method::Sdid => fit_sdid_at(
+            panel,
+            t0,
+            SdidConfig {
+                bounds: opts.bounds,
+                ..SdidConfig::default()
+            },
+        ),
+        Method::Fp => fit_fp_at(
+            panel,
+            t0,
+            FpConfig {
+                bounds: opts.bounds,
+                ..FpConfig::default()
+            },
+        ),
+        // RSC has no simplex weights to bound (see `Method::honours_weight_bounds`).
+        Method::Rsc => fit_rsc_at(panel, t0, RscConfig::default()),
         Method::Ensemble => {
             unreachable!("Ensemble is combined across methods, not a single fit")
         }
     }
 }
 
-/// Normalize three (clamped-nonnegative) weights to sum to 1. Falls back to
-/// equal weights if the inputs are degenerate (all ≤ 0).
-fn normalize_weights(w: [f64; 3]) -> [f64; 3] {
-    let c = [w[0].max(0.0), w[1].max(0.0), w[2].max(0.0)];
-    let s = c[0] + c[1] + c[2];
+/// Normalize (clamped-nonnegative) weights to sum to 1. Falls back to equal
+/// weights if the inputs are degenerate (all ≤ 0).
+fn normalize_weights(w: &[f64]) -> Vec<f64> {
+    let c: Vec<f64> = w.iter().map(|x| x.max(0.0)).collect();
+    let s: f64 = c.iter().sum();
     if s > 0.0 {
-        [c[0] / s, c[1] / s, c[2] / s]
+        c.iter().map(|x| x / s).collect()
     } else {
-        [1.0 / 3.0; 3]
+        vec![1.0 / c.len().max(1) as f64; c.len()]
     }
 }
 
@@ -48,15 +80,12 @@ fn normalize_weights(w: [f64; 3]) -> [f64; 3] {
 /// a method with a tighter placebo distribution gets more weight. A small floor
 /// (relative to the mean variance) keeps a near-perfect fit from taking all the
 /// weight and avoids divide-by-zero.
-fn inverse_variance_weights(var: [f64; 3]) -> [f64; 3] {
-    let mean = (var[0] + var[1] + var[2]) / 3.0;
+fn inverse_variance_weights(var: &[f64]) -> Vec<f64> {
+    let k = var.len().max(1) as f64;
+    let mean = var.iter().sum::<f64>() / k;
     let floor = 1e-6 * mean + f64::MIN_POSITIVE;
-    let prec = [
-        1.0 / (var[0] + floor),
-        1.0 / (var[1] + floor),
-        1.0 / (var[2] + floor),
-    ];
-    normalize_weights(prec)
+    let prec: Vec<f64> = var.iter().map(|v| 1.0 / (v + floor)).collect();
+    normalize_weights(&prec)
 }
 
 /// Build the sub-panel on periods `[0, end)` with a multiplicative `lift` applied
@@ -144,6 +173,7 @@ pub fn power_curve(
     target_power: f64,
     min_pre: usize,
     lookback: Option<usize>,
+    opts: FitOptions,
 ) -> PowerResult {
     let t = y.cols();
     assert!(test_len >= 1 && test_len < t, "test_len out of range");
@@ -170,7 +200,7 @@ pub fn power_curve(
     // Historical null: ATT estimates with no injected lift.
     let null_atts: Vec<f64> = par_map_items(starts.clone(), |s| {
         let panel = injected_subpanel(y, treated, s, s + test_len, 0.0);
-        fit_method(&panel, s, method).att
+        fit_method(&panel, s, method, opts).att
     });
     let mut abs_null: Vec<f64> = null_atts.iter().map(|a| a.abs()).collect();
     abs_null.sort_by(f64::total_cmp);
@@ -185,7 +215,7 @@ pub fn power_curve(
         } else {
             par_map_items(starts.clone(), |s| {
                 let panel = injected_subpanel(y, treated, s, s + test_len, lift);
-                fit_method(&panel, s, method).att
+                fit_method(&panel, s, method, opts).att
             })
         };
         let power = atts.iter().filter(|a| a.abs() > crit).count() as f64 / n_windows as f64;
@@ -223,16 +253,18 @@ pub fn power_curve(
     }
 }
 
-/// Power analysis for a **weighted-average ensemble** of SC + ASC + SDID.
+/// Power analysis for a **weighted-average ensemble** of several base methods.
 ///
-/// Each historical placebo window is fit with all three estimators and combined
-/// into a single ATT, `Σ wₘ · ATTₘ`, *before* the null distribution and power are
+/// Each historical placebo window is fit with every member and combined into a
+/// single ATT, `Σ wₘ · ATTₘ`, *before* the null distribution and power are
 /// computed — so this reports the power of the averaged estimator (which is
-/// generally more stable than any single one), not the average of three powers.
+/// generally more stable than any single one), not the average of the members'
+/// powers.
 ///
-/// `weights` is `[w_sc, w_asc, w_sdid]`; `None` uses data-driven inverse-variance
-/// weights from each method's historical-null spread. Returns the result plus the
-/// (normalized) weights actually used.
+/// `members` lists the estimators to blend (any of [`crate::types::BASE_METHODS`]);
+/// `weights` is one non-negative number per member, or `None` for data-driven
+/// inverse-variance weights from each method's historical-null spread. Returns the
+/// result plus the (normalized) weights actually used.
 #[allow(clippy::too_many_arguments)]
 pub fn power_curve_ensemble(
     y: &Mat,
@@ -243,8 +275,10 @@ pub fn power_curve_ensemble(
     target_power: f64,
     min_pre: usize,
     lookback: Option<usize>,
-    weights: Option<[f64; 3]>,
-) -> (PowerResult, [f64; 3]) {
+    members: &[Method],
+    weights: Option<&[f64]>,
+    opts: FitOptions,
+) -> (PowerResult, Vec<f64>) {
     let t = y.cols();
     assert!(test_len >= 1 && test_len < t, "test_len out of range");
     let first = min_pre.max(1);
@@ -261,33 +295,39 @@ pub fn power_curve_ensemble(
     }
     let n_windows = starts.len();
     let (base_mean, base_sum) = treated_baseline(y, treated);
+    let members: Vec<Method> = members.to_vec();
+    assert!(!members.is_empty(), "ensemble needs at least one member");
+    let k = members.len();
 
-    // Per-window null ATTs for each of the three methods (one fit-set, reused for
-    // both weight estimation and the lift-0 power point).
-    let null_by_window: Vec<[f64; 3]> = par_map_items(starts.clone(), |s| {
+    // Per-window null ATTs for every member (one fit-set, reused for both weight
+    // estimation and the lift-0 power point).
+    let null_by_window: Vec<Vec<f64>> = par_map_items(starts.clone(), |s| {
         let panel = injected_subpanel(y, treated, s, s + test_len, 0.0);
-        [
-            fit_method(&panel, s, Method::Sc).att,
-            fit_method(&panel, s, Method::Asc).att,
-            fit_method(&panel, s, Method::Sdid).att,
-        ]
+        members
+            .iter()
+            .map(|&m| fit_method(&panel, s, m, opts).att)
+            .collect()
     });
 
     let w = match weights {
-        Some(w) => normalize_weights(w),
+        Some(w) => {
+            assert_eq!(w.len(), k, "one ensemble weight per member");
+            normalize_weights(w)
+        }
         None => {
-            let mut var = [0.0f64; 3];
-            for m in 0..3 {
-                let col: Vec<f64> = null_by_window.iter().map(|a| a[m]).collect();
-                let sd = std_dev(&col);
-                var[m] = sd * sd;
-            }
-            inverse_variance_weights(var)
+            let var: Vec<f64> = (0..k)
+                .map(|m| {
+                    let col: Vec<f64> = null_by_window.iter().map(|a| a[m]).collect();
+                    let sd = std_dev(&col);
+                    sd * sd
+                })
+                .collect();
+            inverse_variance_weights(&var)
         }
     };
-    let combine = |a: [f64; 3]| w[0] * a[0] + w[1] * a[1] + w[2] * a[2];
+    let combine = |a: &[f64]| -> f64 { (0..k).map(|m| w[m] * a[m]).sum() };
 
-    let null_atts: Vec<f64> = null_by_window.iter().map(|&a| combine(a)).collect();
+    let null_atts: Vec<f64> = null_by_window.iter().map(|a| combine(a)).collect();
     let mut abs_null: Vec<f64> = null_atts.iter().map(|a| a.abs()).collect();
     abs_null.sort_by(f64::total_cmp);
     let crit = quantile(&abs_null, 1.0 - alpha);
@@ -300,11 +340,11 @@ pub fn power_curve_ensemble(
         } else {
             par_map_items(starts.clone(), |s| {
                 let panel = injected_subpanel(y, treated, s, s + test_len, lift);
-                combine([
-                    fit_method(&panel, s, Method::Sc).att,
-                    fit_method(&panel, s, Method::Asc).att,
-                    fit_method(&panel, s, Method::Sdid).att,
-                ])
+                let atts: Vec<f64> = members
+                    .iter()
+                    .map(|&m| fit_method(&panel, s, m, opts).att)
+                    .collect();
+                combine(&atts)
             })
         };
         let power = atts.iter().filter(|a| a.abs() > crit).count() as f64 / n_windows as f64;
