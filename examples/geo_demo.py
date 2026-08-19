@@ -23,8 +23,13 @@ def asset(name: str) -> str:
     return os.path.join(ASSETS, name)
 
 
-def clean_panel(n=40, t=78, seed=3):
-    """Low-noise factor-model panel — synthetic control tracks tightly."""
+def clean_panel(n=26, t=44, seed=3):
+    """Low-noise factor-model panel — synthetic control tracks tightly.
+
+    n stays >= 24 so the multi-cell section below (which names markets up to
+    DMA_23) has every cell plus a donor pool. Sizes are kept modest so the demo
+    runs in seconds rather than minutes.
+    """
     rng = np.random.default_rng(seed)
     uf = rng.normal(size=(n, 3))
     tf = rng.normal(scale=0.4, size=(t, 3))
@@ -40,7 +45,7 @@ def clean_panel(n=40, t=78, seed=3):
     return GeoDesign(Y, names=[f"DMA_{i:02d}" for i in range(n)])
 
 
-def heterogeneous_panel(n=60, t=78, seed=7):
+def heterogeneous_panel(n=28, t=44, seed=7):
     """Heavy-tailed sizes + idiosyncratic noise — #geos genuinely matters."""
     rng = np.random.default_rng(seed)
     uf = rng.normal(size=(n, 3))
@@ -62,7 +67,8 @@ def heterogeneous_panel(n=60, t=78, seed=7):
 # 1) Power analysis + guardrails on a clean panel.
 # ===========================================================================
 design = clean_panel()
-best = design.select_markets(test_len=8, target_lift=0.05, max_treated=4, top=1)[0]
+best = design.select_markets(test_len=8, target_lift=0.05, max_treated=4,
+                             n_candidates=20, top=1)[0]
 treated = best["markets"]
 
 rep = design.power(treated=treated, test_len=8)
@@ -82,7 +88,7 @@ print("\n" + "=" * 64)
 print("MARKET SELECTION (target lift 5%, up to 3 markets)")
 print("=" * 64)
 for i, c in enumerate(design.select_markets(test_len=8, target_lift=0.05,
-                                            max_treated=3, top=5), 1):
+                                            max_treated=3, n_candidates=20, top=5), 1):
     mde = f"{100*c['mde_pct']:.1f}%" if c["mde_pct"] is not None else "—"
     print(f"{i}. {', '.join(c['markets']):<28} power={c['power_at_target']:.2f}  "
           f"MDE={mde:>6}  holdout={100*c['holdout_pct']:.1f}%  conf={c['confidence']:.0f}")
@@ -92,11 +98,11 @@ for i, c in enumerate(design.select_markets(test_len=8, target_lift=0.05,
 # ===========================================================================
 print()
 grid = heterogeneous_panel().recommend(
-    test_lengths=[4, 8, 12],
-    n_geos_options=[3, 5, 10, 20],
+    test_lengths=[4, 8],
+    n_geos_options=[3, 5, 10],
     target_lift=0.05,
-    alphas=[0.05, 0.10],
-    n_candidates=30,
+    alphas=[0.10],
+    n_candidates=15,
 )
 print(grid.summary())
 grid.plot(asset("geo_scenarios.png"))
@@ -149,7 +155,8 @@ print("wrote", asset("geo_effect_over_time.png"))
 # Pin in must-have markets and drop ones you don't trust as controls:
 forced = treated[:1]
 ranked = design.select_markets(test_len=8, target_lift=0.05, max_treated=3,
-                               include=forced, exclude=[design.names[-1]], top=3)
+                               n_candidates=20, include=forced,
+                               exclude=[design.names[-1]], top=3)
 print(f"\nselect_markets(include={forced}, exclude=['{design.names[-1]}']):")
 for c in ranked:
     print(f"   {', '.join(c['markets']):<28} score={c['score']:.3f}  "

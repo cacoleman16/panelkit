@@ -299,6 +299,47 @@ def test_power_and_evaluate_exclude():
     assert ev.lift == ev.lift  # not NaN
 
 
+def test_select_exclude_overrides_eligible_and_composes_with_include():
+    # exclude + include + eligible together: a market listed in BOTH eligible and
+    # exclude must be dropped (exclude wins); the forced market must always appear;
+    # remaining slots come only from the eligible-minus-excluded pool.
+    Y, names = geo_panel(n=14)
+    d = GeoDesign(Y, names=names)
+    ranked = d.select_markets(
+        test_len=10, target_lift=0.1, max_treated=3, n_candidates=40,
+        include=["M09"], exclude=["M01", "M02"],
+        eligible=["M01", "M03", "M04", "M05"], top=20)
+    assert ranked
+    for c in ranked:
+        chosen = set(c["markets"])
+        assert "M09" in chosen                       # forced market always present
+        assert not (chosen & {"M01", "M02"})         # excluded never treated
+        assert chosen - {"M09"} <= {"M03", "M04", "M05"}  # exclude beats eligible
+
+
+def test_select_include_accepts_indices_like_names():
+    # include by integer index must behave identically to include by name.
+    Y, names = geo_panel(n=14)
+    d = GeoDesign(Y, names=names)
+    by_name = d.select_markets(test_len=10, target_lift=0.1, max_treated=2,
+                               n_candidates=20, include=["M05"], seed=1, top=20)
+    by_idx = d.select_markets(test_len=10, target_lift=0.1, max_treated=2,
+                              n_candidates=20, include=[5], seed=1, top=20)
+    assert [c["markets"] for c in by_name] == [c["markets"] for c in by_idx]
+
+
+def test_recommend_honors_include_and_exclude():
+    # The specification sweep must pass include/exclude through to every cell.
+    Y, names = geo_panel(n=14)
+    d = GeoDesign(Y, names=names)
+    grid = d.recommend(test_lengths=[6, 8], n_geos_options=[1, 2], target_lift=0.1,
+                       include=["M00"], exclude=["M01"], n_candidates=20)
+    assert grid.rows
+    for row in grid.rows:
+        chosen = set(row["markets"])
+        assert "M00" in chosen and "M01" not in chosen
+
+
 def test_unknown_market_raises():
     Y, names = geo_panel()
     d = GeoDesign(Y, names=names)
