@@ -11,9 +11,9 @@
 
 use crate::panel::Panel;
 use crate::result::ScFit;
-use panelkit_linalg::ops::matmul::{matvec, matvec_t};
+use panelkit_linalg::ops::matmul::{matvec, matvec_t, syrk_ata};
 use panelkit_linalg::ops::norms::nrm2;
-use panelkit_linalg::opt::simplex::{sc_weights, solve_fw};
+use panelkit_linalg::opt::simplex::{solve_bounded, WeightBounds};
 use panelkit_linalg::Mat;
 
 /// Configuration for the synthetic-control fit.
@@ -22,12 +22,56 @@ pub struct ScConfig {
     /// Ridge penalty on the weights (0.0 = classic SC). A small value improves
     /// conditioning when donors are collinear.
     pub ridge: f64,
+    /// Abadie & L'Hour (2021) penalty `λ` on donor *dissimilarity*: adds
+    /// `λ Σ_j w_j ‖y_pre − Z_j‖²` to the objective, so among the many weight
+    /// vectors that fit the pre-period equally well the solver prefers the one
+    /// built from donors that individually resemble the treated unit. `0.0` =
+    /// classic (unpenalized) SC.
+    pub penalty: f64,
+    /// Per-donor weight bounds (`lo ≤ w_j ≤ hi`); default = plain simplex.
+    pub bounds: WeightBounds,
 }
 
 impl Default for ScConfig {
     fn default() -> Self {
-        ScConfig { ridge: 0.0 }
+        ScConfig {
+            ridge: 0.0,
+            penalty: 0.0,
+            bounds: WeightBounds::default(),
+        }
     }
+}
+
+/// Solve the synthetic-control weight problem for a donor block `z0`
+/// (`T_pre × J`) and treated pre-period path `y`, honouring the ridge, the
+/// dissimilarity penalty and the per-donor bounds in `cfg`.
+///
+/// The penalty enters as a linear term: minimizing
+/// `½‖y − Z₀w‖² + (λ/2) Σ_j w_j d_j` with `d_j = ‖y − Z_j‖²` is the simplex QP
+/// `½wᵀGw − (b − (λ/2)d)ᵀw`, so it costs one extra vector.
+pub fn solve_weights(z0: &Mat, y: &[f64], cfg: &ScConfig) -> Vec<f64> {
+    let gram = syrk_ata(z0);
+    let mut b = matvec_t(z0, y);
+    if cfg.penalty > 0.0 {
+        let t_pre = z0.rows();
+        for (j, bj) in b.iter_mut().enumerate() {
+            let mut d = 0.0;
+            for t in 0..t_pre {
+                let r = y[t] - z0.get(t, j);
+                d += r * r;
+            }
+            *bj -= 0.5 * cfg.penalty * d;
+        }
+    }
+    // The bounded path needs a longer budget (accelerated projected gradient
+    // rather than away-step Frank-Wolfe); the unbounded path keeps the classic
+    // solver's settings so default fits are unchanged.
+    let (max_iter, tol) = if cfg.bounds.binds(z0.cols()) {
+        (20_000, 1e-12)
+    } else {
+        (5_000, 1e-10)
+    };
+    solve_bounded(&gram, &b, cfg.ridge, cfg.bounds, max_iter, tol).w
 }
 
 /// Fit synthetic control on a block-treatment panel.
@@ -55,8 +99,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: ScConfig) -> ScFit {
     let y_post: Vec<f64> = treated_mean[t0..].to_vec();
 
     // Solve the simplex-constrained weight problem on the pre-period.
-    let sol = sc_weights(&donor_pre, &y_pre, cfg.ridge);
-    let w = sol.w;
+    let w = solve_weights(&donor_pre, &y_pre, &cfg);
 
     sc_fit_from_weights(&w, donor_ids, &donor_pre, &donor_post, &y_pre, &y_post)
 }
@@ -124,8 +167,28 @@ pub fn fit_series(
     donor_ids: Vec<usize>,
     ridge: f64,
 ) -> ScFit {
-    let gram = panelkit_linalg::ops::matmul::syrk_ata(donor_pre);
-    let b = matvec_t(donor_pre, y_pre);
-    let sol = solve_fw(&gram, &b, ridge, 5000, 1e-10);
-    sc_fit_from_weights(&sol.w, donor_ids, donor_pre, donor_post, y_pre, y_post)
+    fit_series_cfg(
+        y_pre,
+        y_post,
+        donor_pre,
+        donor_post,
+        donor_ids,
+        ScConfig {
+            ridge,
+            ..ScConfig::default()
+        },
+    )
+}
+
+/// [`fit_series`] with the full config (penalty and per-donor bounds included).
+pub fn fit_series_cfg(
+    y_pre: &[f64],
+    y_post: &[f64],
+    donor_pre: &Mat,
+    donor_post: &Mat,
+    donor_ids: Vec<usize>,
+    cfg: ScConfig,
+) -> ScFit {
+    let w = solve_weights(donor_pre, y_pre, &cfg);
+    sc_fit_from_weights(&w, donor_ids, donor_pre, donor_post, y_pre, y_post)
 }

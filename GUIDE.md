@@ -71,6 +71,66 @@ gap path are also available.
 
 ---
 
+## Demeaned Synthetic Control (`DemeanedSC`) — Ferman & Pinto 2021
+
+**Estimand.** Same ATT as SC.
+
+**How.** Subtract each unit's own **pre-treatment mean**, fit the same
+simplex-constrained weights on those deviations, then add the treated unit's
+level back:
+
+```text
+ŷ_t = ȳ_pre + Σ_j ŵ_j (Y_jt − ȳ_j,pre)
+```
+
+Equivalently: SC with a free intercept. Because levels are matched by
+construction, the weights are spent entirely on the co-movement that carries the
+common factors.
+
+**Use when.** The treated market's **level** sits outside the convex hull of the
+donors — a large DMA against mid-size donors, a flagship store against the rest
+of the estate — or the pre-treatment fit is imperfect because of transitory
+noise. Classic SC in that situation spends its weights trying to close a level
+gap it cannot close, and the unclosed remainder is reported as effect. In
+simulation (`benchmarks/sim_methods.py`, `hull_gap`) SC's ATT lands ~14× the true
+effect away from it while this estimator stays within a few percent.
+
+**Not for.** A *scale* mismatch (donors that move proportionally less than the
+treated unit). Demeaning removes an additive level, not a multiplicative one —
+`AugmentedSC` or `RobustSC` are the ones that extrapolate.
+
+**Weights.** Convex (simplex), so `min_weight`/`max_weight` apply.
+
+**Inference.** Placebo, as for SC. The test statistic is |ATT| rather than the
+RMSPE ratio: the demeaned residuals are centred by construction, so a constant
+post-period shift would leave the ratio untouched.
+
+---
+
+## Robust Synthetic Control (`RobustSC`) — Amjad, Shah & Shen 2018
+
+**Estimand.** Same ATT as SC.
+
+**How.** The matrix-completion view: assume the donor panel is a low-rank signal
+plus noise, hard-threshold its spectrum (`M̂ = Σ_{i≤k} σᵢuᵢvᵢᵀ`), and regress the
+treated pre-period on the de-noised factors by least squares. `rank=None` picks
+the smallest rank carrying `energy` (default 0.999) of the squared spectrum.
+
+**Use when.** The donors carry a clear low-rank structure (seasonality, shared
+trend) and you want a counterfactual that can **extrapolate**: the weights are
+unconstrained — they may be negative and need not sum to one — so a treated unit
+whose scale exceeds every donor is still reachable. It is the natural complement
+to the simplex estimators in the ensemble because its errors are the least
+correlated with theirs.
+
+**Not for.** Interpreting weights as "which markets make up the synthetic
+market": they are regression coefficients on de-noised factors, not shares.
+`min_weight`/`max_weight` therefore do not apply.
+
+**Inference.** Placebo, as for SC.
+
+---
+
 ## Matrix Completion NNM (`MCNNM`)
 
 **Estimand.** ATT on treated cells: observed minus a low-rank imputed
@@ -229,6 +289,9 @@ distrust TWFE, use C&S/SA.
 - **Block treatment, general default:** SDID.
 - **Block treatment, several treated units, conservative read / cumulative $:**
   CP-ASC family.
+- **Treated market's level outside the donor hull / imperfect pre-fit:**
+  `DemeanedSC` (Ferman-Pinto).
+- **Low-rank donors, treated unit needs extrapolation:** `RobustSC`.
 - **Low-rank structure / many treated cells:** MC-NNM.
 - **Staggered adoption:** C&S (headline) and SA (robustness); run GoodmanBacon to
   show why a naive TWFE differs.
@@ -272,7 +335,7 @@ to fix.
 ### Power analysis — `design.power(treated, test_len, …)`
 
 Historical placebo with injected multiplicative lift on your real panel, across
-SC / ASC / SDID. Returns a report with:
+the methods you ask for. Returns a report with:
 
 - **MDE three ways**: `% lift`, `absolute` per-period, and `cumulative` over the
   window, each with confidence intervals.
@@ -283,20 +346,65 @@ SC / ASC / SDID. Returns a report with:
 
 Key options: `alpha` (significance level, default 0.10), `target_power`
 (default 0.80), `lifts` (the % grid), `methods`, `recommended` (default SDID),
-`lookback`, `ensemble`/`ensemble_weights`.
+`lookback`, `ensemble`/`ensemble_weights`/`ensemble_members`,
+`min_weight`/`max_weight`.
 
-**The ENSEMBLE method (weighted average of SC + ASC + SDID).** By default
-`power()` adds an `"ENSEMBLE"` result alongside the three base methods: a
-weighted average of their ATTs, combined *within each placebo window* before the
-null and power are computed. (That ordering matters — the power of the averaged
-estimator is not the average of three powers; the blend is usually steadier than
-any single method, so its MDE is often the smallest.) `ensemble_weights="auto"`
+**The ENSEMBLE method (weighted average of the base methods).** By default
+`power()` adds an `"ENSEMBLE"` result alongside the base methods: a weighted
+average of their ATTs, combined *within each placebo window* before the null and
+power are computed. (That ordering matters — the power of the averaged estimator
+is not the average of the members' powers; the blend is usually steadier than any
+single method, so its MDE is often the smallest.) `ensemble_weights="auto"`
 (default) uses **inverse-variance** weighting — each method weighted by the
 precision of its historical-null distribution, so a noisier estimator counts for
-less. Pass `"equal"`, a dict like `{"SC": 0.5, "ASC": 0.2, "SDID": 0.3}`, or a
-`[w_sc, w_asc, w_sdid]` list to set them yourself; `ensemble=False` turns it off.
-The weights used are printed in the report and stored on
-`rep.results["ENSEMBLE"].ensemble_weights`.
+less. Pass `"equal"`, a dict like `{"SC": 0.5, "SDID": 0.5}`, or one number per
+member to set them yourself; `ensemble=False` turns it off. The weights used are
+printed in the report and stored on
+`rep.results["ENSEMBLE"].ensemble_weights` (member order in
+`rep.ensemble_members`).
+
+**Who's in the ensemble.** The members default to whatever `methods` you fitted —
+all five of `SC`, `ASC`, `SDID`, `FP`, `RSC` — and `ensemble_members=[...]`
+overrides that independently of `methods`:
+
+| member | what it adds | fails when |
+|---|---|---|
+| `SC` | transparent convex weights | the treated level/scale is outside the donor hull |
+| `ASC` | ridge bias-correction for residual imbalance | very poor pre-fit |
+| `SDID` | unit **and** time weights, free intercept | few pre-periods |
+| `FP` | Ferman-Pinto **demeaned** SC: matches deviations, not levels | scale (not level) mismatch |
+| `RSC` | spectral de-noising + unconstrained weights, so it extrapolates | donors carry little low-rank signal |
+
+`FP` and `RSC` were added on simulation evidence — `benchmarks/sim_methods.py`
+reproduces it across six data-generating processes. Two findings worth knowing:
+
+- With the treated market's **level outside the donor hull** (a big DMA against
+  mid-size donors), classic SC's ATT is off by more than the effect itself, and
+  adding `FP` cuts the ensemble's estimation RMSE by ~50%. Elsewhere `FP` costs
+  at most a few percent.
+- Design-time **MDE** and measured-effect **accuracy are not the same test**. The
+  placebo power engine compares each estimator against *its own* historical-null
+  spread, so a constant bias cancels out of the MDE — the same bias lands
+  squarely in the number `evaluate()` reports. That is why membership is chosen
+  on estimation RMSE, and why the MDE barely moves either way.
+
+**Bounding donor weights (`min_weight` / `max_weight`).** `power()`,
+`evaluate()`, `select_markets()` and the estimator classes take a per-donor
+weight box on top of the simplex:
+
+```python
+# no single donor may carry more than 20% of the synthetic market
+rep = design.power(treated=["chicago"], test_len=4, max_weight=0.20)
+ev  = design.evaluate(treated=["chicago"], treat_start=52, max_weight=0.20)
+```
+
+`max_weight` caps concentration — useful when one donor would otherwise *be* the
+counterfactual and a single market's idiosyncratic shock would land straight in
+your effect. `min_weight` sets a floor under every donor, forcing
+diversification. Both apply to the simplex-weighted methods (`SC`, `ASC`,
+`SDID`, `FP`); `RSC` has no bounded weights to constrain. With `J` donors the
+box must be feasible — `J·min_weight ≤ 1 ≤ J·max_weight` — and you get an
+explicit error naming the binding value if it isn't.
 
 **How power is simulated (many placebos, not one).** For a treated set, the test
 window of length `test_len` is *slid across the whole history*: every valid start
@@ -320,8 +428,9 @@ months of windows).
 
 `power()` *plans* a test; `evaluate()` *measures* one. Given the treated markets
 and the period treatment began (`treat_start`, the first post-period column), it
-fits SC / ASC / SDID, reports each one's realized effect, and blends them into a
-weighted-average **ensemble** estimate.
+fits every method in `methods` (SC / ASC / SDID / FP / RSC by default), reports
+each one's realized effect, and blends them into a weighted-average **ensemble**
+estimate.
 
 ```python
 ev = design.evaluate(treated=["chicago", "denver"], treat_start=52, level=0.90)

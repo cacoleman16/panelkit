@@ -2,7 +2,7 @@
 
 use numpy::PyReadonlyArray2;
 use panelkit_geo::selection::{select_markets, SelectConfig};
-use panelkit_geo::types::Method;
+use panelkit_geo::types::{FitOptions, Method};
 use panelkit_geo::{diagnostics, power_curve, power_curve_ensemble};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -12,19 +12,16 @@ use crate::results::{PyGeoDiagnostics, PyMarketCandidate, PyPowerResult};
 use crate::validate;
 
 fn parse_method(s: &str) -> PyResult<Method> {
-    match s.to_lowercase().as_str() {
-        "sc" => Ok(Method::Sc),
-        "asc" => Ok(Method::Asc),
-        "sdid" => Ok(Method::Sdid),
-        other => Err(PyValueError::new_err(format!(
-            "unknown method '{other}' (expected sc/asc/sdid)"
-        ))),
-    }
+    Method::from_name(s).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "unknown method '{s}' (expected sc/asc/sdid/fp/rsc)"
+        ))
+    })
 }
 
 /// Power analysis for one method via historical placebo with injected lift.
 #[pyfunction]
-#[pyo3(signature = (y, treated, test_len, lifts, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, lookback=None))]
+#[pyo3(signature = (y, treated, test_len, lifts, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, lookback=None, min_weight=0.0, max_weight=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub fn geo_power(
     py: Python<'_>,
@@ -37,6 +34,8 @@ pub fn geo_power(
     target_power: f64,
     min_pre: usize,
     lookback: Option<usize>,
+    min_weight: f64,
+    max_weight: f64,
 ) -> PyResult<PyPowerResult> {
     let m = parse_method(method)?;
     let (n, t) = validate::check_panel(&y)?;
@@ -45,6 +44,9 @@ pub fn geo_power(
     validate::check_lifts(&lifts)?;
     validate::check_unit_interval("alpha", alpha)?;
     validate::check_unit_interval("target_power", target_power)?;
+    let opts = FitOptions {
+        bounds: validate::check_weight_bounds(min_weight, max_weight, n - treated.len())?,
+    };
     let mat = mat_from_numpy(&y);
     let pr = py.allow_threads(move || {
         power_curve(
@@ -57,6 +59,7 @@ pub fn geo_power(
             target_power,
             min_pre,
             lookback,
+            opts,
         )
     });
     Ok(PyPowerResult {
@@ -76,13 +79,14 @@ pub fn geo_power(
     })
 }
 
-/// Power analysis for a **weighted-average ensemble** of SC + ASC + SDID.
+/// Power analysis for a **weighted-average ensemble** of base methods.
 ///
-/// `weights` is `[w_sc, w_asc, w_sdid]`; `None` uses data-driven inverse-variance
-/// weights from each method's historical-null spread. The estimators are combined
-/// per placebo window before power is computed.
+/// `members` names the estimators to blend (default SC + ASC + SDID); `weights`
+/// is one non-negative number per member, or `None` for data-driven
+/// inverse-variance weights from each method's historical-null spread. The
+/// members are combined per placebo window before power is computed.
 #[pyfunction]
-#[pyo3(signature = (y, treated, test_len, lifts, alpha=0.1, target_power=0.8, min_pre=0, lookback=None, weights=None))]
+#[pyo3(signature = (y, treated, test_len, lifts, alpha=0.1, target_power=0.8, min_pre=0, lookback=None, weights=None, members=None, min_weight=0.0, max_weight=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub fn geo_power_ensemble(
     py: Python<'_>,
@@ -95,21 +99,43 @@ pub fn geo_power_ensemble(
     min_pre: usize,
     lookback: Option<usize>,
     weights: Option<Vec<f64>>,
+    members: Option<Vec<String>>,
+    min_weight: f64,
+    max_weight: f64,
 ) -> PyResult<PyPowerResult> {
+    let members: Vec<Method> = match members {
+        None => vec![Method::Sc, Method::Asc, Method::Sdid],
+        Some(names) => {
+            if names.is_empty() {
+                return Err(PyValueError::new_err(
+                    "members must name at least one estimator",
+                ));
+            }
+            names
+                .iter()
+                .map(|s| parse_method(s))
+                .collect::<PyResult<Vec<_>>>()?
+        }
+    };
     let w = match weights {
         None => None,
         Some(v) => {
-            if v.len() != 3 {
-                return Err(PyValueError::new_err(
-                    "weights must have exactly 3 entries: [w_sc, w_asc, w_sdid]",
-                ));
+            if v.len() != members.len() {
+                return Err(PyValueError::new_err(format!(
+                    "weights must have one entry per ensemble member ({} given, {} members)",
+                    v.len(),
+                    members.len()
+                )));
             }
             if v.iter().any(|x| *x < 0.0 || !x.is_finite()) {
                 return Err(PyValueError::new_err(
                     "weights must be finite and non-negative",
                 ));
             }
-            Some([v[0], v[1], v[2]])
+            if v.iter().sum::<f64>() <= 0.0 {
+                return Err(PyValueError::new_err("weights must sum to > 0"));
+            }
+            Some(v)
         }
     };
     let (n, t) = validate::check_panel(&y)?;
@@ -118,6 +144,9 @@ pub fn geo_power_ensemble(
     validate::check_lifts(&lifts)?;
     validate::check_unit_interval("alpha", alpha)?;
     validate::check_unit_interval("target_power", target_power)?;
+    let opts = FitOptions {
+        bounds: validate::check_weight_bounds(min_weight, max_weight, n - treated.len())?,
+    };
     let mat = mat_from_numpy(&y);
     let (pr, used) = py.allow_threads(move || {
         power_curve_ensemble(
@@ -129,7 +158,9 @@ pub fn geo_power_ensemble(
             target_power,
             min_pre,
             lookback,
-            w,
+            &members,
+            w.as_deref(),
+            opts,
         )
     });
     Ok(PyPowerResult {
@@ -145,7 +176,7 @@ pub fn geo_power_ensemble(
         crit: pr.crit,
         se_null: pr.se_null,
         n_windows: pr.n_windows,
-        ensemble_weights: Some(used.to_vec()),
+        ensemble_weights: Some(used),
     })
 }
 
@@ -179,7 +210,7 @@ pub fn geo_diagnostics(
 
 /// Search and rank candidate treatment-market sets.
 #[pyfunction]
-#[pyo3(signature = (y, eligible, max_treated, test_len, target_lift, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, n_candidates=200, seed=0, exact_size=None, lookback=None, include=None))]
+#[pyo3(signature = (y, eligible, max_treated, test_len, target_lift, method="sdid", alpha=0.1, target_power=0.8, min_pre=0, n_candidates=200, seed=0, exact_size=None, lookback=None, include=None, min_weight=0.0, max_weight=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub fn geo_select(
     py: Python<'_>,
@@ -197,6 +228,8 @@ pub fn geo_select(
     exact_size: Option<usize>,
     lookback: Option<usize>,
     include: Option<Vec<usize>>,
+    min_weight: f64,
+    max_weight: f64,
 ) -> PyResult<Vec<PyMarketCandidate>> {
     let m = parse_method(method)?;
     let (n, t) = validate::check_panel(&y)?;
@@ -256,6 +289,17 @@ pub fn geo_select(
         seed,
         exact_size,
         lookback,
+        // Candidate sets vary in size, so each bound is checked against the donor
+        // count that makes it hardest to satisfy: `max_weight` needs
+        // `J·max >= 1`, so the *smallest* donor pool (the largest treated set)
+        // binds; `min_weight` needs `J·min <= 1`, so the *largest* pool does.
+        opts: FitOptions {
+            bounds: {
+                let j_min = n.saturating_sub(exact_size.unwrap_or(max_treated));
+                validate::check_weight_bounds(0.0, max_weight, j_min)?;
+                validate::check_weight_bounds(min_weight, max_weight, n - 1)?
+            },
+        },
     };
     let ranked = py.allow_threads(move || select_markets(&mat, &cfg));
     Ok(ranked

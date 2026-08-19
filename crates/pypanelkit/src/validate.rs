@@ -7,6 +7,7 @@
 //! but a plain ValueError with an actionable message is the contract.)
 
 use numpy::PyReadonlyArray2;
+use panelkit_linalg::opt::simplex::WeightBounds;
 use pyo3::exceptions::PyValueError;
 use pyo3::PyResult;
 
@@ -170,4 +171,50 @@ pub fn check_indices(name: &str, idx: &[usize], n: usize) -> PyResult<()> {
         }
     }
     Ok(())
+}
+
+/// Per-donor weight bounds for the simplex-weighted estimators.
+///
+/// `min_weight`/`max_weight` must describe a non-empty feasible set for the
+/// `j` donors actually available: every weight ≥ `min_weight` needs
+/// `j·min_weight ≤ 1`, and every weight ≤ `max_weight` needs `j·max_weight ≥ 1`.
+/// Both failures are reported here with the donor count and the binding value,
+/// rather than silently relaxed inside the solver.
+pub fn check_weight_bounds(min_weight: f64, max_weight: f64, j: usize) -> PyResult<WeightBounds> {
+    if !(min_weight.is_finite() && (0.0..=1.0).contains(&min_weight)) {
+        return Err(PyValueError::new_err(format!(
+            "min_weight must be in [0, 1]; got {min_weight}"
+        )));
+    }
+    if !(max_weight.is_finite() && max_weight > 0.0 && max_weight <= 1.0) {
+        return Err(PyValueError::new_err(format!(
+            "max_weight must be in (0, 1]; got {max_weight}"
+        )));
+    }
+    if min_weight > max_weight {
+        return Err(PyValueError::new_err(format!(
+            "min_weight ({min_weight}) must not exceed max_weight ({max_weight})"
+        )));
+    }
+    if j == 0 {
+        return Ok(WeightBounds::new(min_weight, max_weight));
+    }
+    let jf = j as f64;
+    if min_weight * jf > 1.0 + 1e-12 {
+        return Err(PyValueError::new_err(format!(
+            "min_weight={min_weight} is infeasible with {j} donors: every donor at that \
+             floor would need total weight {:.4} > 1. Use min_weight <= {:.4} (= 1/{j}).",
+            min_weight * jf,
+            1.0 / jf
+        )));
+    }
+    if max_weight * jf < 1.0 - 1e-12 {
+        return Err(PyValueError::new_err(format!(
+            "max_weight={max_weight} is infeasible with {j} donors: capping every donor \
+             there allows total weight {:.4} < 1. Use max_weight >= {:.4} (= 1/{j}).",
+            max_weight * jf,
+            1.0 / jf
+        )));
+    }
+    Ok(WeightBounds::new(min_weight, max_weight))
 }

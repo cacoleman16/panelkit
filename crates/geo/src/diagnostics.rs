@@ -6,7 +6,7 @@
 //! warnings, and a composite 0–100 confidence score.
 
 use crate::power::fit_method;
-use crate::types::{Diagnostics, Method};
+use crate::types::{Diagnostics, FitOptions, Method};
 use panelkit_estimators::Panel;
 use panelkit_linalg::Mat;
 
@@ -110,7 +110,7 @@ pub fn diagnostics(y: &Mat, treated: &[usize], test_len: usize) -> Diagnostics {
 
     // --- Pre-period fit quality from a real SC fit on the planned window. ---
     let panel = Panel::block(y.clone(), treated, t0);
-    let fit = fit_method(&panel, t0, Method::Sc);
+    let fit = fit_method(&panel, t0, Method::Sc, FitOptions::default());
     let treated_pre = &treated_series[..t0];
     let pre_sd = std_dev(treated_pre).max(1e-12);
     let pre_fit_rel = fit.pre_rmspe / pre_sd;

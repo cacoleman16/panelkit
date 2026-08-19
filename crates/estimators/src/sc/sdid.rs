@@ -17,7 +17,7 @@
 
 use crate::panel::Panel;
 use crate::result::ScFit;
-use panelkit_linalg::opt::simplex::solve_fw;
+use panelkit_linalg::opt::simplex::{solve_bounded, WeightBounds};
 use panelkit_linalg::Mat;
 
 /// Configuration for SDID.
@@ -26,11 +26,18 @@ pub struct SdidConfig {
     /// Multiplier on the paper's default unit-weight ridge `ζ`. 1.0 = as in the
     /// paper; 0.0 disables regularization.
     pub zeta_scale: f64,
+    /// Per-donor bounds (`lo ≤ ω_j ≤ hi`) on the **unit** weights; default =
+    /// plain simplex. Time weights are a different object (they weight periods,
+    /// not donors) and are never bounded by this.
+    pub bounds: WeightBounds,
 }
 
 impl Default for SdidConfig {
     fn default() -> Self {
-        SdidConfig { zeta_scale: 1.0 }
+        SdidConfig {
+            zeta_scale: 1.0,
+            bounds: WeightBounds::default(),
+        }
     }
 }
 
@@ -46,7 +53,12 @@ pub fn fit(panel: &Panel, cfg: SdidConfig) -> ScFit {
 /// (centering the design and target along the fitting axis), then Frank–Wolfe.
 /// `design` is `R×K` (R fitting observations, K simplex variables); `target`
 /// length `R`. `eta` is the ridge added to the centered Gram.
-fn simplex_with_intercept(design: &Mat, target: &[f64], eta: f64) -> Vec<f64> {
+fn simplex_with_intercept(
+    design: &Mat,
+    target: &[f64],
+    eta: f64,
+    bounds: WeightBounds,
+) -> Vec<f64> {
     let r = design.rows();
     let k = design.cols();
     if k == 0 {
@@ -74,7 +86,12 @@ fn simplex_with_intercept(design: &Mat, target: &[f64], eta: f64) -> Vec<f64> {
 
     let gram = panelkit_linalg::ops::matmul::syrk_ata(&dc);
     let b = panelkit_linalg::ops::matmul::matvec_t(&dc, &tc);
-    solve_fw(&gram, &b, eta, 10000, 1e-11).w
+    let (max_iter, tol) = if bounds.binds(k) {
+        (20_000, 1e-12)
+    } else {
+        (10_000, 1e-11)
+    };
+    solve_bounded(&gram, &b, eta, bounds, max_iter, tol).w
 }
 
 /// Fit SDID treating `t0` as the first post-period.
@@ -117,7 +134,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: SdidConfig) -> ScFit {
         cfg.zeta_scale * scale * sd
     };
     let eta_unit = (zeta * zeta) * t_pre as f64;
-    let omega = simplex_with_intercept(&ctrl_pre, &ytr_pre, eta_unit);
+    let omega = simplex_with_intercept(&ctrl_pre, &ytr_pre, eta_unit, cfg.bounds);
 
     // --- Time weights λ: fit pre-period outcomes to post-avg, across controls. ---
     // design rows = control units, cols = pre periods => transpose of ctrl_pre.
@@ -131,7 +148,7 @@ pub fn fit_at(panel: &Panel, t0: usize, cfg: SdidConfig) -> ScFit {
         }
         ctrl_post_avg[jc] = s / t_post as f64;
     }
-    let lambda = simplex_with_intercept(&design_time, &ctrl_post_avg, 0.0);
+    let lambda = simplex_with_intercept(&design_time, &ctrl_post_avg, 0.0, WeightBounds::default());
 
     // --- Weighted DiD. ---
     // Treated time-weighted pre level and simple post level.
@@ -300,5 +317,5 @@ fn sdid_time_weights(panel: &Panel, t0: usize) -> Vec<f64> {
         }
         ctrl_post_avg[jc] = s / t_post as f64;
     }
-    simplex_with_intercept(&design_time, &ctrl_post_avg, 0.0)
+    simplex_with_intercept(&design_time, &ctrl_post_avg, 0.0, WeightBounds::default())
 }

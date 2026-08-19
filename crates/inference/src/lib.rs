@@ -12,7 +12,7 @@ pub mod ci;
 pub mod parallel;
 pub mod placebo;
 
-pub use batch::{asc_att_many, sc_att_many, sdid_att_many};
+pub use batch::{asc_att_many, fp_att_many, rsc_att_many, sc_att_many, sdid_att_many};
 pub use bootstrap::{
     block_bootstrap_mean, jackknife_se, multiplier_bootstrap, multiplier_event_bands,
     stationary_bootstrap_mean,

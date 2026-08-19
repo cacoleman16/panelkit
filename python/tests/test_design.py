@@ -125,21 +125,56 @@ def test_power_ensemble_present_and_weighted():
     d = GeoDesign(Y, names=names)
     rep = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.05, 0.1])
     assert "ENSEMBLE" in rep.results
+    k = len(rep.ensemble_members)
+    assert k == len(("SC", "ASC", "SDID", "FP", "RSC"))
     ens = rep.results["ENSEMBLE"]
     w = ens.ensemble_weights
-    assert w is not None and len(w) == 3
+    assert w is not None and len(w) == k
     assert abs(sum(w) - 1.0) < 1e-9 and all(x >= 0 for x in w)
     # equal weights honored
     eq = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
                  ensemble_weights="equal").results["ENSEMBLE"].ensemble_weights
-    assert all(abs(x - 1 / 3) < 1e-9 for x in eq)
-    # dict weights honored (normalized)
+    assert all(abs(x - 1 / k) < 1e-9 for x in eq)
+    # dict weights honored (normalized); members not named get zero
     dd = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
                  ensemble_weights={"SC": 2, "ASC": 1, "SDID": 1}).results["ENSEMBLE"].ensemble_weights
-    assert abs(dd[0] - 0.5) < 1e-9
+    assert abs(dd[0] - 0.5) < 1e-9 and dd[-1] == 0.0
     # can be turned off
     off = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1], ensemble=False)
     assert "ENSEMBLE" not in off.results
+
+
+def test_ensemble_members_are_configurable():
+    Y, names = geo_panel()
+    d = GeoDesign(Y, names=names)
+    rep = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
+                  methods=["SC", "SDID"], ensemble_members=["SC", "SDID", "FP"])
+    assert rep.ensemble_members == ("SC", "SDID", "FP")
+    assert len(rep.results["ENSEMBLE"].ensemble_weights) == 3
+    # ...and the ensemble tracks `methods` when members are not named explicitly.
+    rep2 = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
+                   methods=["SDID", "FP"])
+    assert rep2.ensemble_members == ("SDID", "FP")
+    with pytest.raises(ValueError, match="unknown ensemble_members"):
+        d.power(treated=["M00"], test_len=10, ensemble_members=["nope"])
+    with pytest.raises(ValueError, match="not ensemble members"):
+        d.power(treated=["M00"], test_len=10, ensemble_members=["SC", "SDID"],
+                ensemble_weights={"ASC": 1.0})
+
+
+def test_power_honours_donor_weight_bounds():
+    Y, names = geo_panel()
+    d = GeoDesign(Y, names=names)
+    # A cap that binds must change the answer; an infeasible one must explain why.
+    capped = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
+                     methods=["SC"], ensemble=False, max_weight=0.2)
+    free = d.power(treated=["M00"], test_len=10, lifts=[0.0, 0.1],
+                   methods=["SC"], ensemble=False)
+    assert capped.results["SC"].se_null != free.results["SC"].se_null
+    with pytest.raises(ValueError, match="max_weight"):
+        d.power(treated=["M00"], test_len=10, methods=["SC"], max_weight=0.0)
+    with pytest.raises(ValueError, match="infeasible"):
+        d.power(treated=["M00"], test_len=10, methods=["SC"], max_weight=0.01)
 
 
 def test_evaluate_recovers_injected_lift(tmp_path):
@@ -149,7 +184,7 @@ def test_evaluate_recovers_injected_lift(tmp_path):
     Yt[0, 60:] *= 1.10                       # clear +10% lift on a well-fit market
     d = GeoDesign(Yt, names=names)
     ev = d.evaluate(treated=["M00"], treat_start=60, level=0.90)
-    assert set(ev.per) == {"SC", "ASC", "SDID"}
+    assert set(ev.per) == {"SC", "ASC", "SDID", "FP", "RSC"}
     # ensemble lift recovered in the right ballpark and detected as significant
     assert 0.05 < ev.lift < 0.15
     assert ev.significant

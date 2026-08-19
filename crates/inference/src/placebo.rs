@@ -10,9 +10,13 @@
 //! distribution for an ATT-scale SE / CI.
 
 use panelkit_estimators::sc::augmented::AscConfig;
+use panelkit_estimators::sc::demeaned::FpConfig;
+use panelkit_estimators::sc::robust::RscConfig;
 use panelkit_estimators::sc::sdid::SdidConfig;
 use panelkit_estimators::sc::synthetic::ScConfig;
-use panelkit_estimators::sc::{fit_asc_at, fit_at as fit_sc_at, fit_sdid_at};
+use panelkit_estimators::sc::{
+    fit_asc_at, fit_at as fit_sc_at, fit_fp_at, fit_rsc_at, fit_sdid_at,
+};
 use panelkit_estimators::{Panel, ScFit};
 use panelkit_linalg::Mat;
 
@@ -22,6 +26,10 @@ pub enum ScMethod {
     Sc(ScConfig),
     Asc(AscConfig),
     Sdid(SdidConfig),
+    /// Ferman-Pinto demeaned SC.
+    Fp(FpConfig),
+    /// Robust / spectrally de-noised SC.
+    Rsc(RscConfig),
 }
 
 impl ScMethod {
@@ -30,17 +38,22 @@ impl ScMethod {
             ScMethod::Sc(cfg) => fit_sc_at(panel, t0, cfg),
             ScMethod::Asc(cfg) => fit_asc_at(panel, t0, cfg),
             ScMethod::Sdid(cfg) => fit_sdid_at(panel, t0, cfg),
+            ScMethod::Fp(cfg) => fit_fp_at(panel, t0, cfg),
+            ScMethod::Rsc(cfg) => fit_rsc_at(panel, t0, cfg),
         }
     }
 
-    /// The placebo test statistic for a fit. SC/ASC use Abadie's post/pre
+    /// The placebo test statistic for a fit. SC/ASC/RSC use Abadie's post/pre
     /// RMSPE ratio. SDID uses |ATT|: its `post_rmspe` measures dispersion of
     /// the gap path *around its mean*, so a constant treatment effect leaves
     /// the ratio completely unchanged — the ratio statistic has no power
-    /// against exactly the alternative being tested.
+    /// against exactly the alternative being tested. The demeaned (Ferman-Pinto)
+    /// estimator is in the same position: its pre-period residuals are centered
+    /// by construction, so a level shift in the post-period is invisible to a
+    /// ratio built from `post_rmspe`.
     fn statistic(&self, fit: &ScFit) -> f64 {
         match self {
-            ScMethod::Sdid(_) => fit.att.abs(),
+            ScMethod::Sdid(_) | ScMethod::Fp(_) => fit.att.abs(),
             _ => fit.rmspe_ratio(),
         }
     }

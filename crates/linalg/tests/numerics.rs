@@ -13,7 +13,10 @@ use panelkit_linalg::factor::svd_gram::{singular_values_via_gram, svd_via_gram};
 use panelkit_linalg::matrix::Mat;
 use panelkit_linalg::ops::matmul::{matmul, matvec};
 use panelkit_linalg::ops::norms::frobenius;
-use panelkit_linalg::opt::simplex::{project_simplex, sc_weights, solve_fw, solve_pg};
+use panelkit_linalg::opt::simplex::{
+    project_bounded_simplex, project_simplex, sc_weights, sc_weights_bounded, solve_bounded,
+    solve_fw, solve_pg, WeightBounds,
+};
 use panelkit_linalg::opt::softthresh::svt;
 use panelkit_linalg::rng::Xoshiro256pp;
 
@@ -488,4 +491,247 @@ fn cholesky_solve_rejects_wrong_length_rhs() {
 fn eig_sym_rejects_non_square_in_release_too() {
     let a = Mat::from_row_major(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let _ = SymEig::new(&a);
+}
+
+// ---------------------------------------------------------------------------
+// Bounded ("capped") simplex weights.
+// ---------------------------------------------------------------------------
+
+/// Brute-force optimum of `½‖y − Y₀w‖²` over a fine grid of the bounded simplex
+/// for J = 3 — an independent oracle for the accelerated projected-gradient
+/// solver.
+fn brute_force_bounded(y0: &Mat, y: &[f64], bounds: WeightBounds, steps: usize) -> (Vec<f64>, f64) {
+    let m = y0.rows();
+    let obj = |w: &[f64]| {
+        let r = matvec(y0, w);
+        (0..m).map(|t| (y[t] - r[t]).powi(2)).sum::<f64>()
+    };
+    let mut best = (vec![1.0 / 3.0; 3], f64::INFINITY);
+    for i in 0..=steps {
+        for j in 0..=(steps - i) {
+            let w = [
+                i as f64 / steps as f64,
+                j as f64 / steps as f64,
+                (steps - i - j) as f64 / steps as f64,
+            ];
+            if w.iter()
+                .any(|&x| x < bounds.lo - 1e-12 || x > bounds.hi + 1e-12)
+            {
+                continue;
+            }
+            let v = obj(&w);
+            if v < best.1 {
+                best = (w.to_vec(), v);
+            }
+        }
+    }
+    best
+}
+
+#[test]
+fn bounded_projection_respects_box_and_sums_to_one() {
+    let b = WeightBounds::new(0.05, 0.4);
+    for seed in 0..25u64 {
+        let mut rng = Xoshiro256pp::seed_from_u64(seed);
+        let j = 4 + (seed as usize % 7);
+        let v: Vec<f64> = (0..j).map(|_| 3.0 * rng.next_normal()).collect();
+        let w = project_bounded_simplex(&v, b);
+        let feas = b.feasible_for(j);
+        let sum: f64 = w.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-12, "sum {sum} for j={j}");
+        for &x in &w {
+            assert!(
+                x >= feas.lo - 1e-12 && x <= feas.hi + 1e-12,
+                "w={w:?} out of [{}, {}]",
+                feas.lo,
+                feas.hi
+            );
+        }
+        // Projection is idempotent on its own image.
+        let w2 = project_bounded_simplex(&w, b);
+        for i in 0..j {
+            assert!((w[i] - w2[i]).abs() < 1e-10, "not idempotent: {w:?} {w2:?}");
+        }
+    }
+}
+
+#[test]
+fn bounded_projection_is_the_nearest_feasible_point() {
+    // Against a brute-force search over a fine simplex grid (J = 3).
+    let bounds = WeightBounds::new(0.1, 0.5);
+    let v = [0.9, 0.05, 0.05];
+    let w = project_bounded_simplex(&v, bounds);
+    let steps = 2000usize;
+    let mut best = (vec![0.0; 3], f64::INFINITY);
+    for i in 0..=steps {
+        for j in 0..=(steps - i) {
+            let c = [
+                i as f64 / steps as f64,
+                j as f64 / steps as f64,
+                (steps - i - j) as f64 / steps as f64,
+            ];
+            if c.iter()
+                .any(|&x| x < bounds.lo - 1e-12 || x > bounds.hi + 1e-12)
+            {
+                continue;
+            }
+            let d: f64 = (0..3).map(|k| (c[k] - v[k]).powi(2)).sum();
+            if d < best.1 {
+                best = (c.to_vec(), d);
+            }
+        }
+    }
+    for k in 0..3 {
+        assert!(
+            (w[k] - best.0[k]).abs() < 2e-3,
+            "projection {w:?} vs brute force {:?}",
+            best.0
+        );
+    }
+}
+
+#[test]
+fn bounded_solver_matches_brute_force() {
+    let mut rng = Xoshiro256pp::seed_from_u64(21);
+    let m = 12usize;
+    let y0 = rand_mat(&mut rng, m, 3);
+    let y: Vec<f64> = (0..m).map(|_| rng.next_normal()).collect();
+    let obj = |w: &[f64]| {
+        let r = matvec(&y0, w);
+        (0..m).map(|t| (y[t] - r[t]).powi(2)).sum::<f64>()
+    };
+    for &(lo, hi) in &[(0.0, 0.5), (0.2, 1.0), (0.15, 0.45), (0.0, 0.34)] {
+        let bounds = WeightBounds::new(lo, hi);
+        let sol = sc_weights_bounded(&y0, &y, 0.0, bounds);
+        let (_, best) = brute_force_bounded(&y0, &y, bounds, 1500);
+        let got = obj(&sol.w);
+        // Grid resolution is 1/1500, so the grid optimum can only be *worse*;
+        // the solver must not be meaningfully worse than it.
+        assert!(
+            got <= best + 1e-4,
+            "bounds ({lo}, {hi}): solver {got} vs brute force {best}"
+        );
+        let sum: f64 = sol.w.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-9, "sum {sum}");
+        let feas = bounds.feasible_for(3);
+        assert!(sol
+            .w
+            .iter()
+            .all(|&x| x >= feas.lo - 1e-9 && x <= feas.hi + 1e-9));
+    }
+}
+
+#[test]
+fn bounded_solver_falls_through_to_fw_when_bounds_do_not_bind() {
+    let mut rng = Xoshiro256pp::seed_from_u64(5);
+    let m = 15usize;
+    let j = 6usize;
+    let y0 = rand_mat(&mut rng, m, j);
+    let y: Vec<f64> = (0..m).map(|_| rng.next_normal()).collect();
+    let gram = panelkit_linalg::ops::matmul::syrk_ata(&y0);
+    let b = panelkit_linalg::ops::matmul::matvec_t(&y0, &y);
+    let fw = solve_fw(&gram, &b, 0.0, 5000, 1e-10);
+    let bd = solve_bounded(&gram, &b, 0.0, WeightBounds::default(), 5000, 1e-10);
+    assert_eq!(fw.w, bd.w, "unbounded path must be bit-identical to FW");
+}
+
+#[test]
+fn bounded_solver_caps_a_dominant_donor() {
+    // Donor 0 *is* the target, so unbounded SC puts all weight on it. A 30% cap
+    // must bind, spread the rest, and still sum to one.
+    let mut rng = Xoshiro256pp::seed_from_u64(99);
+    let m = 30usize;
+    let j = 5usize;
+    let y0 = rand_mat(&mut rng, m, j);
+    let y: Vec<f64> = (0..m).map(|t| y0.get(t, 0)).collect();
+    let free = sc_weights_bounded(&y0, &y, 0.0, WeightBounds::default());
+    assert!(free.w[0] > 0.99, "unbounded weights {:?}", free.w);
+    let capped = sc_weights_bounded(&y0, &y, 0.0, WeightBounds::max_weight(0.3));
+    assert!(
+        (capped.w[0] - 0.3).abs() < 1e-6,
+        "cap not binding: {:?}",
+        capped.w
+    );
+    let sum: f64 = capped.w.iter().sum();
+    assert!((sum - 1.0).abs() < 1e-9);
+    assert!(capped.w.iter().all(|&x| (-1e-12..=0.3 + 1e-9).contains(&x)));
+    // A floor must lift every donor to at least `lo`.
+    let floored = sc_weights_bounded(&y0, &y, 0.0, WeightBounds::new(0.1, 1.0));
+    assert!(
+        floored.w.iter().all(|&x| x >= 0.1 - 1e-9),
+        "floor not enforced: {:?}",
+        floored.w
+    );
+}
+
+#[test]
+fn infeasible_bounds_are_relaxed_not_panicked() {
+    // 5 donors cannot all carry ≥ 0.5, nor all be ≤ 0.1 — the bounds get relaxed
+    // to the nearest feasible pair instead of producing an empty feasible set.
+    let mut rng = Xoshiro256pp::seed_from_u64(3);
+    let y0 = rand_mat(&mut rng, 10, 5);
+    let y: Vec<f64> = (0..10).map(|_| rng.next_normal()).collect();
+    for &(lo, hi) in &[(0.5, 1.0), (0.0, 0.1), (0.4, 0.05)] {
+        let sol = sc_weights_bounded(&y0, &y, 0.0, WeightBounds::new(lo, hi));
+        let sum: f64 = sol.w.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-9, "bounds ({lo},{hi}) sum {sum}");
+        assert!(sol.w.iter().all(|&x| x.is_finite()));
+    }
+}
+
+#[test]
+fn bounded_solver_is_invariant_to_outcome_scale() {
+    // The duality gap carries the objective's units, so a fixed absolute
+    // stopping tolerance is unreachable once outcomes are in the thousands (the
+    // solver then burns its whole iteration budget and can stop short of the
+    // optimum). Solving the same problem at 1× and 1000× must give the same
+    // weights: the QP is scale-equivariant, so any scale dependence is the
+    // stopping rule leaking in.
+    let mut rng = Xoshiro256pp::seed_from_u64(4242);
+    let (m, j) = (40usize, 25usize);
+    let mut z = Mat::zeros(m, j);
+    for c in 0..j {
+        let level = 0.5 + 2.0 * (c as f64 / j as f64);
+        for t in 0..m {
+            z.set(
+                t,
+                c,
+                level * (1.0 + 0.05 * rng.next_normal()) + 0.01 * t as f64,
+            );
+        }
+    }
+    let y: Vec<f64> = (0..m)
+        .map(|t| 1.5 * (1.0 + 0.05 * rng.next_normal()) + 0.01 * t as f64)
+        .collect();
+
+    let scale = 1000.0;
+    let mut z_big = z.clone();
+    for v in z_big.as_mut_slice().iter_mut() {
+        *v *= scale;
+    }
+    let y_big: Vec<f64> = y.iter().map(|v| v * scale).collect();
+
+    for cap in [0.2, 0.5] {
+        let bounds = WeightBounds::max_weight(cap);
+        let small = sc_weights_bounded(&z, &y, 0.0, bounds);
+        let big = sc_weights_bounded(&z_big, &y_big, 0.0, bounds);
+        for i in 0..j {
+            assert!(
+                (small.w[i] - big.w[i]).abs() < 1e-6,
+                "cap {cap}: weight {i} differs across scales: {} vs {}",
+                small.w[i],
+                big.w[i]
+            );
+        }
+        // Feasible at both scales, and the tight cap actually binds (otherwise
+        // the test would pass trivially through the unbounded fall-through).
+        assert!(small.w.iter().all(|&x| x <= cap + 1e-9 && x >= -1e-12));
+        if cap == 0.2 {
+            let top = small.w.iter().cloned().fold(0.0_f64, f64::max);
+            assert!(
+                (top - cap).abs() < 1e-6,
+                "cap not binding: top weight {top}"
+            );
+        }
+    }
 }

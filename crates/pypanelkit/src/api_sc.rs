@@ -4,12 +4,14 @@ use numpy::{PyArray1, PyReadonlyArray2, PyReadonlyArray3};
 use panelkit_estimators::mcnnm::{fit_mcnnm_at, McnnmConfig};
 use panelkit_estimators::sc::cpasc::{fit_at as fit_cpasc_at, CpascConfig, PoolMode};
 use panelkit_estimators::sc::{
-    fit_asc_at, fit_at, fit_sdid_at, sdid_jackknife_loo_atts, AscConfig, ScConfig, SdidConfig,
+    fit_asc_at, fit_at, fit_fp_at, fit_rsc_at, fit_sdid_at, sdid_jackknife_loo_atts, AscConfig,
+    FpConfig, RscConfig, ScConfig, SdidConfig,
 };
 use panelkit_estimators::{Panel, ScFit};
 use panelkit_inference::{
-    asc_att_many, block_bootstrap_mean, jackknife_se, normal_quantile, percentile_ci, sc_att_many,
-    sc_placebo_method, sdid_att_many, stationary_bootstrap_mean, PlaceboResult, ScMethod,
+    asc_att_many, block_bootstrap_mean, fp_att_many, jackknife_se, normal_quantile, percentile_ci,
+    rsc_att_many, sc_att_many, sc_placebo_method, sdid_att_many, stationary_bootstrap_mean,
+    PlaceboResult, ScMethod,
 };
 use panelkit_linalg::Mat;
 use pyo3::exceptions::PyValueError;
@@ -68,7 +70,8 @@ fn attach_placebo(result: &mut PyScResult, pb: &PlaceboResult, att: f64, level: 
 /// column index. If `placebo` is true, an in-space placebo test is run and the
 /// p-value / distribution are attached.
 #[pyfunction]
-#[pyo3(signature = (y, treated, treat_time, ridge=0.0, placebo=false, level=0.95))]
+#[pyo3(signature = (y, treated, treat_time, ridge=0.0, placebo=false, level=0.95, penalty=0.0, min_weight=0.0, max_weight=1.0))]
+#[allow(clippy::too_many_arguments)]
 pub fn fit_sc(
     py: Python<'_>,
     y: PyReadonlyArray2<f64>,
@@ -77,19 +80,28 @@ pub fn fit_sc(
     ridge: f64,
     placebo: bool,
     level: f64,
+    penalty: f64,
+    min_weight: f64,
+    max_weight: f64,
 ) -> PyResult<PyScResult> {
     let (n, t) = validate::check_panel(&y)?;
     validate::check_treated(&treated, n)?;
     validate::check_treat_time(treat_time, t)?;
     validate::check_nonneg("ridge", ridge)?;
+    validate::check_nonneg("penalty", penalty)?;
     validate::check_unit_interval("level", level)?;
+    let bounds = validate::check_weight_bounds(min_weight, max_weight, n - treated.len())?;
     let mat = mat_from_numpy(&y);
     // Everything below is pure Rust on the copied panel — release the GIL so
     // a J-donor placebo run can use every core (and other Python threads keep
     // running during a long fit).
     Ok(py.allow_threads(move || {
         let panel = Panel::block(mat, &treated, treat_time);
-        let cfg = ScConfig { ridge };
+        let cfg = ScConfig {
+            ridge,
+            penalty,
+            bounds,
+        };
         let fit = fit_at(&panel, treat_time, cfg);
         let mut result = result_from_fit(&fit);
         if placebo {
@@ -104,7 +116,7 @@ pub fn fit_sc(
 /// true, an in-space placebo test (refitting ASC per donor) attaches the
 /// p-value and ATT-scale SE / CI.
 #[pyfunction]
-#[pyo3(signature = (y, treated, treat_time, sc_ridge=0.0, aug_lambda=None, placebo=false, level=0.95))]
+#[pyo3(signature = (y, treated, treat_time, sc_ridge=0.0, aug_lambda=None, placebo=false, level=0.95, min_weight=0.0, max_weight=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_asc(
     py: Python<'_>,
@@ -115,6 +127,8 @@ pub fn fit_asc(
     aug_lambda: Option<f64>,
     placebo: bool,
     level: f64,
+    min_weight: f64,
+    max_weight: f64,
 ) -> PyResult<PyScResult> {
     let (n, t) = validate::check_panel(&y)?;
     validate::check_treated(&treated, n)?;
@@ -126,12 +140,14 @@ pub fn fit_asc(
         validate::check_pos("aug_lambda", l)?;
     }
     validate::check_unit_interval("level", level)?;
+    let bounds = validate::check_weight_bounds(min_weight, max_weight, n - treated.len())?;
     let mat = mat_from_numpy(&y);
     Ok(py.allow_threads(move || {
         let panel = Panel::block(mat, &treated, treat_time);
         let cfg = AscConfig {
             sc_ridge,
             aug_lambda,
+            bounds,
         };
         let fit = fit_asc_at(&panel, treat_time, cfg);
         let mut result = result_from_fit(&fit);
@@ -149,7 +165,8 @@ pub fn fit_asc(
 /// donor), or `"jackknife"` (the fixed-weights leave-one-unit-out jackknife of
 /// Arkhangelsky et al. / `synthdid`; needs ≥ 2 treated units).
 #[pyfunction]
-#[pyo3(signature = (y, treated, treat_time, zeta_scale=1.0, inference="none", level=0.95))]
+#[pyo3(signature = (y, treated, treat_time, zeta_scale=1.0, inference="none", level=0.95, min_weight=0.0, max_weight=1.0))]
+#[allow(clippy::too_many_arguments)]
 pub fn fit_sdid(
     py: Python<'_>,
     y: PyReadonlyArray2<f64>,
@@ -158,6 +175,8 @@ pub fn fit_sdid(
     zeta_scale: f64,
     inference: &str,
     level: f64,
+    min_weight: f64,
+    max_weight: f64,
 ) -> PyResult<PyScResult> {
     let (n, t) = validate::check_panel(&y)?;
     validate::check_treated(&treated, n)?;
@@ -178,11 +197,12 @@ pub fn fit_sdid(
              single treated unit",
         ));
     }
+    let bounds = validate::check_weight_bounds(min_weight, max_weight, n - treated.len())?;
     let inference = inference.to_string();
     let mat = mat_from_numpy(&y);
     Ok(py.allow_threads(move || {
         let panel = Panel::block(mat, &treated, treat_time);
-        let cfg = SdidConfig { zeta_scale };
+        let cfg = SdidConfig { zeta_scale, bounds };
         let fit = fit_sdid_at(&panel, treat_time, cfg);
         let mut result = result_from_fit(&fit);
         match inference.as_str() {
@@ -200,6 +220,96 @@ pub fn fit_sdid(
                 result.inference_distribution = Some(loo);
             }
             _ => {}
+        }
+        result
+    }))
+}
+
+/// Fit the demeaned synthetic control (Ferman & Pinto 2021).
+///
+/// SC on unit-demeaned data: each unit's pre-treatment mean is removed before
+/// the weights are solved, and the treated unit's level is added back to build
+/// the counterfactual. Robust to a treated level that no convex combination of
+/// donors can match. If `placebo` is true, an in-space placebo test attaches the
+/// p-value and ATT-scale SE / CI.
+#[pyfunction]
+#[pyo3(signature = (y, treated, treat_time, ridge=0.0, placebo=false, level=0.95, min_weight=0.0, max_weight=1.0))]
+#[allow(clippy::too_many_arguments)]
+pub fn fit_fp(
+    py: Python<'_>,
+    y: PyReadonlyArray2<f64>,
+    treated: Vec<usize>,
+    treat_time: usize,
+    ridge: f64,
+    placebo: bool,
+    level: f64,
+    min_weight: f64,
+    max_weight: f64,
+) -> PyResult<PyScResult> {
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
+    validate::check_nonneg("ridge", ridge)?;
+    validate::check_unit_interval("level", level)?;
+    let bounds = validate::check_weight_bounds(min_weight, max_weight, n - treated.len())?;
+    let mat = mat_from_numpy(&y);
+    Ok(py.allow_threads(move || {
+        let panel = Panel::block(mat, &treated, treat_time);
+        let cfg = FpConfig { ridge, bounds };
+        let fit = fit_fp_at(&panel, treat_time, cfg);
+        let mut result = result_from_fit(&fit);
+        if placebo {
+            let pb = sc_placebo_method(&panel, ScMethod::Fp(cfg));
+            attach_placebo(&mut result, &pb, fit.att, level);
+        }
+        result
+    }))
+}
+
+/// Fit robust / spectrally de-noised synthetic control (Amjad, Shah & Shen
+/// 2018).
+///
+/// Hard-thresholds the donor panel's spectrum and regresses the treated
+/// pre-period on the de-noised factors. `rank` pins the retained rank; `None`
+/// picks the smallest rank carrying `energy` of the squared spectrum. The
+/// weights this returns are unconstrained (they may be negative and need not sum
+/// to one), which is what lets it extrapolate beyond the donor hull.
+#[pyfunction]
+#[pyo3(signature = (y, treated, treat_time, rank=None, energy=0.999, ridge=0.0, placebo=false, level=0.95))]
+#[allow(clippy::too_many_arguments)]
+pub fn fit_rsc(
+    py: Python<'_>,
+    y: PyReadonlyArray2<f64>,
+    treated: Vec<usize>,
+    treat_time: usize,
+    rank: Option<usize>,
+    energy: f64,
+    ridge: f64,
+    placebo: bool,
+    level: f64,
+) -> PyResult<PyScResult> {
+    let (n, t) = validate::check_panel(&y)?;
+    validate::check_treated(&treated, n)?;
+    validate::check_treat_time(treat_time, t)?;
+    validate::check_nonneg("ridge", ridge)?;
+    validate::check_unit_interval("energy", energy)?;
+    validate::check_unit_interval("level", level)?;
+    if let Some(r) = rank {
+        validate::check_min_count("rank", r, 1)?;
+    }
+    let mat = mat_from_numpy(&y);
+    Ok(py.allow_threads(move || {
+        let panel = Panel::block(mat, &treated, treat_time);
+        let cfg = RscConfig {
+            rank,
+            energy,
+            ridge,
+        };
+        let fit = fit_rsc_at(&panel, treat_time, cfg);
+        let mut result = result_from_fit(&fit);
+        if placebo {
+            let pb = sc_placebo_method(&panel, ScMethod::Rsc(cfg));
+            attach_placebo(&mut result, &pb, fit.att, level);
         }
         result
     }))
@@ -324,6 +434,7 @@ pub fn fit_cpasc(
         asc: AscConfig {
             sc_ridge,
             aug_lambda,
+            ..AscConfig::default()
         },
         mode: pool,
         block_len,
@@ -349,7 +460,8 @@ pub fn fit_cpasc(
 /// per replication, computed in parallel in Rust with the GIL released.
 /// `method` is "sc", "asc", or "sdid".
 #[pyfunction]
-#[pyo3(signature = (y3, treated, treat_time, method="sc", ridge=0.0, zeta_scale=1.0))]
+#[pyo3(signature = (y3, treated, treat_time, method="sc", ridge=0.0, zeta_scale=1.0, min_weight=0.0, max_weight=1.0))]
+#[allow(clippy::too_many_arguments)]
 pub fn fit_many<'py>(
     py: Python<'py>,
     y3: PyReadonlyArray3<f64>,
@@ -358,6 +470,8 @@ pub fn fit_many<'py>(
     method: &str,
     ridge: f64,
     zeta_scale: f64,
+    min_weight: f64,
+    max_weight: f64,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let view = y3.as_array();
     let (r, n, t) = (view.shape()[0], view.shape()[1], view.shape()[2]);
@@ -368,6 +482,7 @@ pub fn fit_many<'py>(
     }
     validate::check_treated(&treated, n)?;
     validate::check_treat_time(treat_time, t)?;
+    let bounds = validate::check_weight_bounds(min_weight, max_weight, n - treated.len())?;
 
     // Build the panels while the GIL is held (we touch the numpy buffer here),
     // checking finiteness in the same pass.
@@ -393,17 +508,34 @@ pub fn fit_many<'py>(
     let method = method.to_string();
     let atts = py
         .allow_threads(move || match method.as_str() {
-            "sc" => Ok(sc_att_many(panels, treat_time, ScConfig { ridge })),
+            "sc" => Ok(sc_att_many(
+                panels,
+                treat_time,
+                ScConfig {
+                    ridge,
+                    bounds,
+                    ..ScConfig::default()
+                },
+            )),
             "asc" => Ok(asc_att_many(
                 panels,
                 treat_time,
                 AscConfig {
                     sc_ridge: ridge,
                     aug_lambda: None,
+                    bounds,
                 },
             )),
-            "sdid" => Ok(sdid_att_many(panels, treat_time, SdidConfig { zeta_scale })),
-            other => Err(format!("unknown method '{other}' (expected sc/asc/sdid)")),
+            "sdid" => Ok(sdid_att_many(
+                panels,
+                treat_time,
+                SdidConfig { zeta_scale, bounds },
+            )),
+            "fp" => Ok(fp_att_many(panels, treat_time, FpConfig { ridge, bounds })),
+            "rsc" => Ok(rsc_att_many(panels, treat_time, RscConfig::default())),
+            other => Err(format!(
+                "unknown method '{other}' (expected sc/asc/sdid/fp/rsc)"
+            )),
         })
         .map_err(PyValueError::new_err)?;
 
