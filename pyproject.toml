@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "panelkit"
-version = "0.2.9"
+version = "0.3.0"
 description = "Fast, from-scratch causal-inference estimators for panel/geo experiments (SC, ASC, SDID, DiD, MC-NNM)."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,8 +12,17 @@ license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "panelkit contributors" }]
 keywords = ["causal-inference", "synthetic-control", "difference-in-differences", "econometrics", "panel-data"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering",
     "Intended Audience :: Science/Research",
 ]

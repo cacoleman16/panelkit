@@ -4,7 +4,7 @@
 
 | check | status | notes |
 |---|---|---|
-| Name `panelkit` available on PyPI | ✅ | `GET pypi.org/pypi/panelkit/json` → 404 |
+| `panelkit` project live on PyPI | ✅ | published since v0.1.0 — see https://pypi.org/project/panelkit/ |
 | sdist builds | ✅ | `maturin build --sdist` |
 | wheel builds (abi3, py39+) | ✅ | one wheel per platform covers Python 3.9+ |
 | sdist is self-contained | ✅ | bundles all crates/*.rs, Cargo manifests, README, LICENSEs, GUIDE |
@@ -52,3 +52,9 @@ twine upload dist/*        # prompts for token, or use ~/.pypirc / TWINE_* env
   dev box produces a non-portable linux tag.
 - **abi3**: we build against the stable ABI (`abi3-py39`), so a single wheel per
   platform serves all Python ≥ 3.9 — no per-minor-version matrix needed.
+- **`twine check` & `packaging`**: maturin emits Metadata-Version 2.4 (with
+  `License-File`). `twine check` only accepts those fields with `packaging >=
+  24.2`; an older `packaging` (e.g. a distro-pinned 24.0) fails with
+  `unrecognized or malformed field 'license-file'`. Run the check in a fresh
+  venv with an up-to-date `packaging` — the metadata itself is valid and PyPI
+  accepts it.

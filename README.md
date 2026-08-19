@@ -21,9 +21,9 @@ the whole stack is self-contained, deterministic, and fast. The numerical core
 ## Install
 
 ```bash
-pip install panelkit            # once published; until then, build from source:
+pip install panelkit
 
-# from a clone (needs a Rust toolchain — https://rustup.rs — and maturin):
+# Or from a clone (needs a Rust toolchain — https://rustup.rs — and maturin):
 pip install maturin numpy
 maturin develop --release --manifest-path crates/pypanelkit/Cargo.toml
 ```

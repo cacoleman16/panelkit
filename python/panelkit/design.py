@@ -1558,8 +1558,9 @@ def _plot_scenarios(grid: "_ScenarioGrid", path):
             r = by.get((a0, tl, ng))
             if r and r["mde_pct"] is not None:
                 grid_mde[i, k] = 100 * r["mde_pct"]
-    cmap = plt.get_cmap("RdYlGn_r").copy()
-    cmap.set_bad("#e5e7eb")  # grey for un-powered cells
+    # with_extremes returns a copy with the "bad" (masked / NaN) colour set;
+    # it replaces the now-deprecated Colormap.set_bad mutation.
+    cmap = plt.get_cmap("RdYlGn_r").with_extremes(bad="#e5e7eb")  # grey for un-powered cells
     finite = grid_mde[_np.isfinite(grid_mde)]
     vmin = float(finite.min()) if finite.size else 0.0
     vmax = float(finite.max()) if finite.size else 1.0

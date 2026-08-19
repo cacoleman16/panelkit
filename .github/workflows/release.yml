@@ -16,6 +16,39 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # Fail fast (before building anything) if a tag push doesn't match the version
+  # declared in the manifests. PyPI versions are immutable, so a mismatched or
+  # stale tag would otherwise publish the wrong version — exactly the failure
+  # mode where a bump lagged behind the code. On workflow_dispatch (no tag) this
+  # just reports the manifest version and passes.
+  check-version:
+    name: Tag ↔ version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the tag matches pyproject.toml and Cargo.toml
+        run: |
+          set -euo pipefail
+          py_ver=$(grep -m1 -E '^version = ' pyproject.toml | cut -d'"' -f2)
+          cargo_ver=$(grep -m1 -E '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "pyproject version : $py_ver"
+          echo "Cargo.toml version: $cargo_ver"
+          if [ "$py_ver" != "$cargo_ver" ]; then
+            echo "::error::pyproject.toml ($py_ver) and Cargo.toml ($cargo_ver) versions disagree."
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag_ver="${GITHUB_REF_NAME#v}"
+            echo "git tag           : ${GITHUB_REF_NAME} (-> $tag_ver)"
+            if [ "$tag_ver" != "$py_ver" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match manifest version $py_ver. Bump the manifests or retag."
+              exit 1
+            fi
+            echo "Tag matches the manifest version — OK to publish $py_ver."
+          else
+            echo "Not a tag push (workflow_dispatch); skipping tag comparison."
+          fi
+
   build-wheels:
     name: Wheels (${{ matrix.os }} ${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -64,9 +97,31 @@ jobs:
           name: sdist
           path: dist
 
+  # Validate the built artifacts' metadata before publishing. twine check on the
+  # actual wheel + sdist catches metadata regressions (bad long-description,
+  # malformed fields) here, where they're recoverable, rather than at the
+  # immutable PyPI upload.
+  validate:
+    name: Validate artifacts (twine check)
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: twine check
+        run: |
+          python -m pip install --upgrade pip twine
+          ls -l dist
+          twine check dist/*
+
   publish:
     name: Publish to PyPI
-    needs: [build-wheels, build-sdist]
+    needs: [check-version, validate]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
