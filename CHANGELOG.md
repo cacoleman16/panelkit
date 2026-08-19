@@ -25,6 +25,28 @@ the `0.2.9` development version without ever being tagged.
 - Top-level `GeoDesign` export (`from panelkit import GeoDesign`).
 - Regression tests locking in selected/excluded/eligible-market composition
   across `power()`, `select_markets()`, and `recommend()`.
+- **`DemeanedSC`** (Ferman & Pinto 2021): synthetic control fit on unit-demeaned
+  data — SC with a free intercept. The answer to a treated market whose *level*
+  sits outside the donor hull, where plain SC spends its weights on a gap it
+  cannot close and reports the remainder as effect.
+- **`RobustSC`** (Amjad, Shah & Shen 2018): hard-thresholds the donor panel's
+  spectrum and regresses on the de-noised factors. Weights are unconstrained, so
+  it can extrapolate past the donor hull.
+- **Penalized SC**: `SyntheticControl(penalty=...)` adds the Abadie & L'Hour
+  (2021) dissimilarity penalty, preferring donors that individually resemble the
+  treated unit among equally good fits.
+- **Donor weight bounds**: `min_weight` / `max_weight` cap or floor every donor's
+  weight on top of the simplex, on the estimator classes and on
+  `GeoDesign.power()` / `evaluate()` / `select_markets()`. Solved exactly over
+  the capped simplex (accelerated projected gradient with a water-filling
+  projection and an active-set polish), not clipped after the fact.
+- **Configurable geo ensemble**: `ensemble_members=[...]` picks the blend
+  independently of which methods are fitted; the ensemble is no longer hard-wired
+  to three members.
+- `benchmarks/sim_methods.py`: the Monte-Carlo study behind ensemble membership —
+  per-method bias/RMSE against a known effect, the error-correlation matrix that
+  decides whether a member adds anything, and ensemble RMSE under three weighting
+  schemes. `--mde` adds the power-engine view.
 
 ### Changed / Fixed
 - **Robustness**: the extension never kills the host process — panics unwind into
@@ -37,6 +59,16 @@ the `0.2.9` development version without ever being tagged.
   degenerate cases.
 - Fixed a matplotlib `PendingDeprecationWarning` (`Colormap.set_bad` →
   `with_extremes(bad=...)`).
+- **Geo defaults**: `power()` and `evaluate()` now fit all five base methods
+  (`SC`, `ASC`, `SDID`, `FP`, `RSC`) and blend all of them, so reports gain two
+  rows and the `ENSEMBLE` numbers shift. `methods=["SC","ASC","SDID"]` restores
+  the previous set. `ensemble_weights` given as a bare list now needs one entry
+  per ensemble member (dicts keyed by method name are unaffected).
+- **linalg**: the bounded-simplex solver's stopping tolerance is interpreted
+  relative to the problem's scale. The Frank–Wolfe duality gap carries the
+  objective's units, so an absolute tolerance is unreachable on a panel of
+  revenue in the thousands — the solve burned its whole iteration budget and
+  still stopped short of the optimum.
 
 ### Packaging / CI
 - Wheels built for Intel macOS and ARM Linux; wheels + sdist attached to each
