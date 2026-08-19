@@ -8,7 +8,7 @@ bumps may add features, patch bumps fix behavior).
 The single source of truth for the version is `Cargo.toml [workspace.package]`
 (mirrored in `pyproject.toml`); `panelkit.__version__` derives from it.
 
-## [0.3.0] — unreleased
+## [0.3.0] — 2026-08-19
 
 First release since 0.2.8; it collects the feature work that had accumulated on
 the `0.2.9` development version without ever being tagged.
